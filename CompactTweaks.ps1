@@ -2180,7 +2180,7 @@ $script:Tweaks = @(
 
     # ============================ NEW: DEBLOATING (process/startup trimming) ============================
     @{ Id = 'trim-updaters'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Trim background services and startup'; Name = 'Turn off third-party updater and elevation services'; Risk = 'Medium'; Recommended = $false
-       Desc = 'The same idea as unticking non-Microsoft updater services in System Configuration (msconfig): finds non-Microsoft services whose name looks like an updater or elevation helper and sets them to Manual (not Disabled), so they stop starting automatically but nothing is removed. Logitech G HUB'"'"'s updater is always left alone because turning it off breaks G HUB. Undo restores each service'"'"'s original start mode.'
+       Desc = 'The same idea as unticking non-Microsoft updater services in System Configuration (msconfig): finds non-Microsoft services whose name looks like an updater or elevation helper and sets them to Manual (not Disabled), so they stop starting automatically but nothing is removed. Logitech G HUB''s updater is always left alone because turning it off breaks G HUB. Undo restores each service''s original start mode.'
        Apply = {
            $found = @(Get-ThirdPartyUpdaterServices)
            if ($found.Count -eq 0) { throw 'No matching third-party updater or elevation services were found.' }
@@ -2201,7 +2201,7 @@ $script:Tweaks = @(
        Test = { return $script:State.ContainsKey('trim-updaters') } },
 
     @{ Id = 'trim-startup'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Trim background services and startup'; Name = 'Disable third-party sign-in startup entries'; Risk = 'Medium'; Recommended = $false
-       Desc = 'The same idea as Autoruns'"'"'s Logon tab: goes through your Run/RunOnce startup entries and disables every one except entries that launch cmd.exe, using the same StartupApproved flag Task Manager'"'"'s Startup tab uses, so disabled apps show as Disabled there too and nothing is deleted. Undo re-enables everything this turned off.'
+       Desc = 'The same idea as Autoruns''s Logon tab: goes through your Run/RunOnce startup entries and disables every one except entries that launch cmd.exe, using the same StartupApproved flag Task Manager''s Startup tab uses, so disabled apps show as Disabled there too and nothing is deleted. Undo re-enables everything this turned off.'
        Apply = {
            $entries = @(Get-RunKeyEntries)
            if ($entries.Count -eq 0) { throw 'No startup entries were found to disable.' }
@@ -2396,7 +2396,7 @@ $script:Tweaks = @(
     # ============================ NEW: NVIDIA ============================
     @{ Id = 'nv-powermizer'; Category = 'vendor'; Group = 'NVIDIA registry tweaks'; Name = 'Force PowerMizer to prefer maximum performance'; Risk = 'Medium'; Recommended = $false
        Guard = { Test-HasGpuVendor 'NVIDIA' }
-       Desc = 'Sets your NVIDIA driver'"'"'s PowerMizer to Prefer Maximum Performance at the driver level, the same effect as the NVIDIA Control Panel setting further down this page, but applied directly. Stops the GPU clocking down between frames. On a laptop this uses noticeably more power and heat, so it is not recommended there. A restore point is made first; undo restores the previous values.'
+       Desc = 'Sets your NVIDIA driver''s PowerMizer to Prefer Maximum Performance at the driver level, the same effect as the NVIDIA Control Panel setting further down this page, but applied directly. Stops the GPU clocking down between frames. On a laptop this uses noticeably more power and heat, so it is not recommended there. A restore point is made first; undo restores the previous values.'
        Restart = 'restart'
        Apply = {
            $gpus = @(Get-GpuList | Where-Object { $_.Name -match 'NVIDIA|GeForce' })
@@ -2414,7 +2414,7 @@ $script:Tweaks = @(
                }
                $n++
            }
-           if ($n -eq 0) { throw 'Could not find the NVIDIA driver'"'"'s registry entry to change.' }
+           if ($n -eq 0) { throw 'Could not find the NVIDIA driver''s registry entry to change.' }
            return @{ Saved = $saved }
        }
        Undo = { param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
