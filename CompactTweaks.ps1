@@ -1,4 +1,3 @@
-
 <#
     Compact Tweaks  -  Stay Compact, Stay Fast.
 
@@ -12,14 +11,10 @@
       4. Tweaks with weak or no evidence are labelled Unproven, kept out of Select recommended,
          and say why. High-risk ones ask for a second confirmation.
 
-    Credits: the Fortnite launch-argument and GameUserSettings facts, and the research notes on
-    which popular tweaks do nothing, come from the MIT-licensed unknowntweaks project
-    (github.com/unknownaimer/unknownutility). All code here is written from scratch.
-
     Keep this file ASCII-only so Windows PowerShell 5.1 reads it correctly.
 #>
 
-$script:Version = '0.4.0'
+$script:Version = '0.5.0'
 $script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1'
 
 # ----------------------------------------------------------------------------
@@ -553,6 +548,91 @@ function Get-FortniteArgPrefix {
     return ('fn:' + $script:FnItemId + ':Fortnite')
 }
 
+function Get-FnFlagToken {
+    param([string]$Flag)
+    switch ($Flag) {
+        'NOSPLASH'    { return @('-NOSPLASH') }
+        'HIGH_D3D11'  { return @('-high', '-d3d11') }
+        'FEATURELEVEL' { return @('-FeatureLevelES31') }
+        default { return @() }
+    }
+}
+
+function Get-FnFlagState {
+    # Reads which of the three launch-argument flags are currently on, from the raw token string.
+    param([string]$CmdLine)
+    $t = " $CmdLine "
+    return @{
+        NOSPLASH     = [bool]($t -match '(?i)\s-NOSPLASH\s')
+        HIGH_D3D11   = [bool]($t -match '(?i)\s-high\s' -and $t -match '(?i)\s-d3d11\s')
+        FEATURELEVEL = [bool]($t -match '(?i)\s-FeatureLevelES31\s')
+    }
+}
+
+function Build-FnCommandLine {
+    # Always the same fixed order, regardless of which flag was toggled last: -NOSPLASH -high -d3d11 -FeatureLevelES31
+    param($State, [string]$ExistingCmd)
+    $known = @()
+    foreach ($f in @('NOSPLASH', 'HIGH_D3D11', 'FEATURELEVEL')) { $known += (Get-FnFlagToken $f) }
+    $extra = @()
+    if ($ExistingCmd) {
+        foreach ($tok in @($ExistingCmd -split '\s+' | Where-Object { $_ })) {
+            if (-not @($known | Where-Object { $_ -ieq $tok })) { $extra += $tok }
+        }
+    }
+    $out = @()
+    if ($State.NOSPLASH)     { $out += (Get-FnFlagToken 'NOSPLASH') }
+    if ($State.HIGH_D3D11)   { $out += (Get-FnFlagToken 'HIGH_D3D11') }
+    if ($State.FEATURELEVEL) { $out += (Get-FnFlagToken 'FEATURELEVEL') }
+    return (($out + $extra) -join ' ').Trim()
+}
+
+function Set-FnLaunchArg {
+    # Turns one flag on or off while keeping the other two flags and any of the user's own
+    # arguments untouched, and always rewrites the line in the fixed order above.
+    param([string]$Flag, [bool]$On)
+    $ini = Get-EpicLauncherIni
+    if (-not $ini) { throw 'The Epic Games Launcher settings file was not found. Open the launcher once, signed in, then try again.' }
+    $wasOpen = Stop-EpicLauncher
+    try {
+        $f = Read-TextFile $ini
+        $acct = Get-EpicAccountId $f.Text
+        if (-not $acct) { throw 'Could not read your Epic account id. Open the Epic Games Launcher once and try again.' }
+        $sec = $acct + '_Settings'
+        $prefix = Get-FortniteArgPrefix $f.Text
+        $lines = ConvertTo-IniLines $f.Text
+        $prevCmd = Get-IniValue $lines $sec ($prefix + '_AdditionalCommands')
+        $prevEn  = Get-IniValue $lines $sec ($prefix + '_AdditionalCommandsEnabled')
+        $state = Get-FnFlagState ([string]$prevCmd)
+        $state[$Flag] = $On
+        $newCmd = Build-FnCommandLine $state ([string]$prevCmd)
+        [void](Backup-FileSafe $ini)
+        [void](Set-IniKey -Lines $lines -Section $sec -Key ($prefix + '_AdditionalCommands') -Value $newCmd -AddIfMissing)
+        [void](Set-IniKey -Lines $lines -Section $sec -Key ($prefix + '_AdditionalCommandsEnabled') -Value 'True' -AddIfMissing)
+        Save-IniLines $ini $lines $f
+        Write-Log ('Fortnite launch arguments now: ' + $newCmd) 'Ok'
+        return @{ File = $ini; Section = $sec; Prefix = $prefix; PrevCmd = $prevCmd; PrevEnabled = $prevEn }
+    } finally {
+        if ($wasOpen) { Start-EpicLauncher }
+    }
+}
+
+function Test-FnLaunchArg {
+    param([string]$Flag)
+    $ini = Get-EpicLauncherIni
+    if (-not $ini) { return $false }
+    $f = Read-TextFile $ini
+    $acct = Get-EpicAccountId $f.Text
+    if (-not $acct) { return $false }
+    $lines = ConvertTo-IniLines $f.Text
+    $prefix = Get-FortniteArgPrefix $f.Text
+    $cmd = Get-IniValue $lines ($acct + '_Settings') ($prefix + '_AdditionalCommands')
+    $en  = Get-IniValue $lines ($acct + '_Settings') ($prefix + '_AdditionalCommandsEnabled')
+    if (-not $en -or $en -ine 'True') { return $false }
+    $st = Get-FnFlagState ([string]$cmd)
+    return [bool]$st[$Flag]
+}
+
 function Stop-EpicLauncher {
     # Returns $true when the main launcher was open, so the caller can start it again afterwards.
     $names = @('EpicGamesLauncher', 'EpicWebHelper', 'EpicOnlineServicesUserHelper')
@@ -615,7 +695,7 @@ function Get-FortniteIniPlan {
     }
     Invoke-IniSet $lines $changes $sec 'FrameRateLimit' ('{0}.000000' -f [int]$Opt.Fps)
     Invoke-IniSet $lines $changes $sec 'bUseVSync' 'False'
-    if ($Opt.LobbyFps) { Invoke-IniSet $lines $changes $sec 'FrontendFrameRateLimit' '240.000000' }
+    if ($Opt.LobbyFps) { Invoke-IniSet $lines $changes $sec 'FrontendFrameRateLimit' '120.000000' }
 
     if ($Opt.LowGraphics) {
         $view = '0'
@@ -626,13 +706,6 @@ function Get-FortniteIniPlan {
             Invoke-IniSet $lines $changes 'ScalabilityGroups' ('sg.' + $q + 'Quality') '0' $true $true
         }
         Invoke-IniSet $lines $changes $sec 'bMotionBlur' 'False' $false $true
-    }
-    if ($Opt.PerfMode) {
-        Invoke-IniSet $lines $changes 'D3DRHIPreference' 'PreferredFeatureLevel' 'es31'
-        Invoke-IniSet $lines $changes 'PerformanceMode' 'MeshQuality' '0'
-    }
-    if ($Opt.NoGrass) {
-        Invoke-IniSet $lines $changes $sec 'bShowGrass' 'False'
     }
     if ($Opt.NoReplays) {
         foreach ($m in @(Find-IniKeys $lines 'Replay')) {
@@ -656,9 +729,9 @@ function Get-FortniteIniPlan {
     if ($Opt.Hud75) {
         $hud = @(Find-IniKeys $lines '^HUDScale$')
         if ($hud.Count -gt 0) {
-            foreach ($m in $hud) { Invoke-IniSet $lines $changes $m.Section $m.Key '0.750000' $false $false }
+            foreach ($m in $hud) { Invoke-IniSet $lines $changes $m.Section $m.Key '0.690000' $false $false }
         } else {
-            Invoke-IniSet $lines $changes $sec 'HUDScale' '0.750000'
+            Invoke-IniSet $lines $changes $sec 'HUDScale' '0.690000'
             [void]$changes.Add('Note: HUDScale was not in your file. It was added, but if the HUD size does not change, send me your file so I can match the exact key.')
         }
     }
@@ -1049,14 +1122,9 @@ $script:NvPlan = Get-NvidiaPlan
 
 function Get-NvDriverDesc {
     $p = $script:NvPlan
-    if (-not $p) { $head = 'No NVIDIA graphics card detected.' }
-    elseif (-not $p.Version) { $head = ('Your card ({0}) is not covered by the driver scheme.' -f $p.Name) }
-    else {
-        $head = ('Your card: {0}. Target driver: {1}' -f $p.Name, $p.Version)
-        if ($p.Installed) { $head += ('. Installed now: ' + $p.Installed) }
-        $head += '.'
-    }
-    return ($head + ' Downloads the matching driver straight from NVIDIA, checks its digital signature, then runs the NVIDIA installer silently as a clean install (you choose when to restart). Scheme: GTX 10-series 552.22, GTX 16 and RTX 20-series 566.36, RTX 30 and 40-series 591.86, RTX 50-series 595.71. Expect two things afterwards: (1) lower FPS at first while game shaders rebuild after the driver change, and (2) before launching Fortnite, the Epic Games Launcher may warn that your driver is too old and ask you to update. Always press No and the game will launch. A restore point is created first.')
+    if (-not $p) { return 'No NVIDIA graphics card was detected, so this tweak has nothing to do here.' }
+    if (-not $p.Version) { return ('{0} is not covered by the driver picks below yet.' -f $p.Name) }
+    return ('Downloads a driver picked for your card ({0}), checks that it is genuinely signed by NVIDIA, then installs it quietly as a clean install. You choose when to restart afterwards. Two things to expect: your FPS may dip for the first few matches while game shaders rebuild for the new driver, and the Epic Games Launcher may warn that your driver is "too old" before Fortnite starts, just click No and the game opens fine. A restore point is made first.' -f $p.Name)
 }
 
 function Get-NvDriverConfirm {
@@ -1072,13 +1140,177 @@ function Get-MouseQueueDesc {
 }
 
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# v0.5 helpers: service/startup trimming, scheduled tasks, network binding/adapter
+# properties, NTFS/fsutil, drive optimization, generic diagnostic-command runner
+# ----------------------------------------------------------------------------
+function Test-IsMicrosoftSigned {
+    param([string]$Path)
+    try {
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
+        $sig = Get-AuthenticodeSignature -FilePath $Path -ErrorAction Stop
+        return [bool]($sig.Status -eq 'Valid' -and [string]$sig.SignerCertificate.Subject -match 'Microsoft')
+    } catch { return $false }
+}
+
+function Get-ServiceBinaryPath {
+    param($Svc)
+    $p = [string]$Svc.PathName
+    $m = [regex]::Match($p, '^"([^"]+)"|^(\S+)')
+    if ($m.Success) { if ($m.Groups[1].Success) { return $m.Groups[1].Value } else { return $m.Groups[2].Value } }
+    return $p
+}
+
+function Get-ThirdPartyUpdaterServices {
+    # Non-Microsoft services whose name/description looks like an updater or elevation helper.
+    # Logitech's G HUB updater is explicitly kept alone because disabling it breaks the app.
+    $out = @()
+    foreach ($s in @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue)) {
+        if ($s.StartMode -eq 'Disabled') { continue }
+        $bin = Get-ServiceBinaryPath $s
+        if (Test-IsMicrosoftSigned $bin) { continue }
+        $text = $s.Name + ' ' + $s.DisplayName
+        if ($text -match '(?i)logitech|g ?hub') { continue }
+        if ($text -match '(?i)updat|elevat') { $out += $s }
+    }
+    return $out
+}
+
+function Get-StartupApprovedPaths {
+    return @(
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+    )
+}
+
+function Get-RunKeyEntries {
+    # Every Run/RunOnce value name across HKCU and HKLM, with its command, skipping cmd.exe entries.
+    $out = @()
+    foreach ($root in @('HKCU:', 'HKLM:', 'HKLM:\SOFTWARE\WOW6432Node')) {
+        foreach ($sub in @('\Software\Microsoft\Windows\CurrentVersion\Run', '\Software\Microsoft\Windows\CurrentVersion\RunOnce')) {
+            $path = $root + $sub
+            $k = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+            if (-not $k) { continue }
+            foreach ($name in @($k.GetValueNames())) {
+                if (-not $name) { continue }
+                $val = [string]$k.GetValue($name)
+                if ($val -match '(?i)cmd\.exe') { continue }
+                $approvedPath = ($root + '\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\' + (Split-Path $sub -Leaf))
+                $out += @{ Root = $root; RunPath = $path; ApprovedPath = $approvedPath; Name = $name }
+            }
+        }
+    }
+    return $out
+}
+
+function Set-StartupApprovedDisabled {
+    param([string]$Path, [string]$Name, [bool]$Disabled)
+    if (-not (Test-Path -LiteralPath $Path)) { New-Item -Path $Path -Force | Out-Null }
+    $bytes = New-Object byte[] 12
+    if ($Disabled) { $bytes[0] = 3 } else { $bytes[0] = 2 }
+    New-ItemProperty -LiteralPath $Path -Name $Name -Value $bytes -PropertyType Binary -Force | Out-Null
+}
+
+$script:SafeToDisableServices = @(
+    @{ Name = 'Fax'; Label = 'Fax' },
+    @{ Name = 'RemoteRegistry'; Label = 'Remote Registry' },
+    @{ Name = 'MapsBroker'; Label = 'Downloaded Maps Manager' },
+    @{ Name = 'RetailDemo'; Label = 'Retail Demo' },
+    @{ Name = 'WMPNetworkSvc'; Label = 'Windows Media Player Network Sharing' },
+    @{ Name = 'WalletService'; Label = 'Wallet Service' },
+    @{ Name = 'PhoneSvc'; Label = 'Phone Service' },
+    @{ Name = 'TabletInputService'; Label = 'Touch Keyboard and Handwriting Panel' }
+)
+
+$script:CleanupScheduledTasks = @(
+    '\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser',
+    '\Microsoft\Windows\Application Experience\ProgramDataUpdater',
+    '\Microsoft\Windows\Autochk\Proxy',
+    '\Microsoft\Windows\Customer Experience Improvement Program\Consolidator',
+    '\Microsoft\Windows\Customer Experience Improvement Program\KernelCeipTask',
+    '\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip',
+    '\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticDataCollector',
+    '\Microsoft\Windows\Feedback\Siuf\DmClient',
+    '\Microsoft\Windows\Feedback\Siuf\DmClientOnScenarioDownload',
+    '\Microsoft\Windows\Power Efficiency Diagnostics\AnalyzeSystem'
+)
+
+function Disable-ScheduledTaskList {
+    param($Paths)
+    $touched = @()
+    foreach ($p in $Paths) {
+        $folder = Split-Path -Path $p -Parent
+        $name = Split-Path -Path $p -Leaf
+        try {
+            $t = Get-ScheduledTask -TaskName $name -TaskPath ($folder + '\') -ErrorAction Stop
+            if ($t.State -eq 'Disabled') { continue }
+            Disable-ScheduledTask -TaskName $name -TaskPath ($folder + '\') -ErrorAction Stop | Out-Null
+            $touched += $p
+        } catch { }
+    }
+    return $touched
+}
+
+function Enable-ScheduledTaskList {
+    param($Paths)
+    foreach ($p in $Paths) {
+        $folder = Split-Path -Path $p -Parent
+        $name = Split-Path -Path $p -Leaf
+        try { Enable-ScheduledTask -TaskName $name -TaskPath ($folder + '\') -ErrorAction Stop | Out-Null } catch { }
+    }
+}
+
+$script:OptionalAppPackages = @(
+    'Microsoft.XboxApp', 'Microsoft.XboxGamingOverlay', 'Microsoft.Xbox.TCUI', 'Microsoft.XboxSpeechToTextOverlay',
+    'Microsoft.XboxIdentityProvider', 'Microsoft.GamingApp', 'Microsoft.3DViewer', 'Microsoft.MixedReality.Portal',
+    'Microsoft.BingWeather', 'Microsoft.BingNews', 'Microsoft.MicrosoftSolitaireCollection', 'Microsoft.ZuneMusic',
+    'Microsoft.ZuneVideo', 'Microsoft.People', 'Microsoft.YourPhone', 'Microsoft.GetHelp', 'Microsoft.Getstarted',
+    'Microsoft.Microsoft3DViewer', 'MicrosoftCorporationII.MicrosoftFamily', 'Microsoft.WindowsFeedbackHub',
+    'Microsoft.MicrosoftOfficeHub', 'Clipchamp.Clipchamp', 'MicrosoftTeams'
+)
+
+function Get-BootDriveIsSsd {
+    try {
+        $letter = $env:SystemDrive.TrimEnd(':')
+        $part = Get-Partition -DriveLetter $letter -ErrorAction Stop
+        $disk = Get-PhysicalDisk -ErrorAction Stop | Where-Object { $_.DeviceId -eq $part.DiskNumber }
+        if ($disk) { return [bool]($disk[0].MediaType -eq 'SSD') }
+    } catch { }
+    return $true
+}
+
+function Invoke-DiagCommand {
+    param([string]$Title, [string]$FilePath, [string[]]$Arguments)
+    Write-Log ('Running: ' + $Title)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = ($Arguments -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    while (-not $proc.StandardOutput.EndOfStream) {
+        $line = $proc.StandardOutput.ReadLine()
+        if ($line -and $line.Trim()) { Write-Log $line }
+        Update-UI
+    }
+    $err = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    if ($err -and $err.Trim()) { Write-Log $err.Trim() 'Warn' }
+    Write-Log ($Title + ' finished (exit code ' + $proc.ExitCode + ').') 'Ok'
+}
+
 # Tweak catalog
 #   Category : tab id (cpu, gpu, kbm, aim, debloat, net, apps, extra)   Group : heading inside the tab
 #   Registry / Services : snapshotted automatically.   Apply/Undo/Test : scriptblocks for anything else.
 #   OneShot : action with no undo.   Guard : hidden when it returns $false.
 #   Risk    : Low | Medium | High (High asks for an extra confirmation).
 #   Unproven groups: kept out of Select recommended and labelled, because the reference research
-#   (unknowntweaks, MIT) found little or no measurable effect.
+#   little or no measurable effect.
 # ----------------------------------------------------------------------------
 $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\FortniteClient-Win64-Shipping.exe\PerfOptions'
 $mm   = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
@@ -1090,8 +1322,8 @@ $memMgmt = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Manage
 $script:Tweaks = @(
 
     # ================================ CPU OPTIMIZATIONS ================================
-    @{ Id = 'powerplan'; Category = 'cpu'; Group = 'Power'; Name = 'Compact Ultimate Power Plan'; Risk = 'Medium'; Recommended = $false
-       Desc = 'Optimized power plan for the best performance without ever throttling the CPU. Best on Desktops.'
+    @{ Id = 'powerplan'; Category = 'cpu'; Group = 'Power'; Name = 'Compact Free Power Plan'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Optimized for multiple tasks. A copy of Windows Ultimate Performance (or High Performance if Ultimate is unavailable) that never throttles the CPU, good for gaming alongside Discord, OBS, a browser and so on running at the same time. Windows only keeps ONE power plan active at a time, so if you also apply Compact Focus Power Plan below, whichever you activate last is the one your PC actually uses. Undo switches back to your previous plan and deletes this one.'
        Apply = {
            $prev = Get-ActiveSchemeGuid
            $new  = $null
@@ -1100,7 +1332,7 @@ $script:Tweaks = @(
                if ($LASTEXITCODE -eq 0 -and $out -match '([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})') { $new = $Matches[1]; break }
            }
            if (-not $new) { throw 'This PC does not allow a high-performance power scheme to be created.' }
-           & powercfg.exe /changename $new 'Compact Ultimate Power Plan' 'Designed for Ultimate Performance' | Out-Null
+           & powercfg.exe /changename $new 'Compact Free Power Plan' 'Optimized for multiple tasks' | Out-Null
            & powercfg.exe /setactive $new | Out-Null
            if ($LASTEXITCODE -ne 0) { throw 'powercfg could not activate the new power scheme.' }
            return @{ Previous = $prev; Created = $new }
@@ -1115,22 +1347,76 @@ $script:Tweaks = @(
            return [bool]($st -and $st.Custom -and ((Get-ActiveSchemeGuid) -eq $st.Custom.Created))
        } },
 
+    @{ Id = 'powerplan-focus'; Category = 'cpu'; Group = 'Power'; Name = 'Compact Focus Power Plan'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Optimized to focus only on the main tasks. Same base as Compact Free Power Plan, plus the minimum processor state forced to 100 percent so the CPU never idles down, best when one demanding game or app is all that matters. Windows only keeps ONE power plan active at a time, so if you also apply Compact Free Power Plan, whichever you activate last is the one your PC actually uses. Uses more power and runs hotter at idle than Compact Free. Undo switches back to your previous plan and deletes this one.'
+       Apply = {
+           $prev = Get-ActiveSchemeGuid
+           $new  = $null
+           foreach ($src in @('e9a42b02-d5df-448d-aa00-03f14749eb61', '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c')) {
+               $out = (& powercfg.exe -duplicatescheme $src 2>&1 | Out-String)
+               if ($LASTEXITCODE -eq 0 -and $out -match '([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})') { $new = $Matches[1]; break }
+           }
+           if (-not $new) { throw 'This PC does not allow a high-performance power scheme to be created.' }
+           & powercfg.exe /changename $new 'Compact Focus Power Plan' 'Optimized to focus only on the main tasks.' | Out-Null
+           & powercfg.exe /setacvalueindex $new SUB_PROCESSOR PROCTHROTTLEMIN 100 | Out-Null
+           & powercfg.exe /setdcvalueindex $new SUB_PROCESSOR PROCTHROTTLEMIN 100 | Out-Null
+           & powercfg.exe /setactive $new | Out-Null
+           if ($LASTEXITCODE -ne 0) { throw 'powercfg could not activate the new power scheme.' }
+           return @{ Previous = $prev; Created = $new }
+       }
+       Undo = {
+           param($Data)
+           if ($Data.Previous) { & powercfg.exe /setactive $Data.Previous | Out-Null }
+           if ($Data.Created)  { & powercfg.exe /delete $Data.Created | Out-Null }
+       }
+       Test = {
+           $st = $script:State['powerplan-focus']
+           return [bool]($st -and $st.Custom -and ((Get-ActiveSchemeGuid) -eq $st.Custom.Created))
+       } },
+
+    @{ Id = 'perfboost-policy'; Category = 'cpu'; Group = 'Power'; Name = 'Aggressive processor performance boost policy'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Sets the active power plan processor boost policy (PERFBOOSTPOLICY) to its most aggressive value, so the CPU is quicker to jump to a higher clock under load. This applies to whichever power plan is active right now, so apply it after choosing your plan. Undo restores the previous value.'
+       Apply = {
+           $scheme = Get-ActiveSchemeGuid
+           if (-not $scheme) { throw 'Could not read the active power plan.' }
+           $ac = (& powercfg.exe /q $scheme SUB_PROCESSOR PERFBOOSTPOLICY | Out-String)
+           $prevAc = 0; $m = [regex]::Match($ac, '(?m)Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)'); if ($m.Success) { $prevAc = [Convert]::ToInt32($m.Groups[1].Value, 16) }
+           $prevDc = 0; $m2 = [regex]::Match($ac, '(?m)Current DC Power Setting Index:\s*0x([0-9a-fA-F]+)'); if ($m2.Success) { $prevDc = [Convert]::ToInt32($m2.Groups[1].Value, 16) }
+           & powercfg.exe /setacvalueindex $scheme SUB_PROCESSOR PERFBOOSTPOLICY 100 | Out-Null
+           & powercfg.exe /setdcvalueindex $scheme SUB_PROCESSOR PERFBOOSTPOLICY 100 | Out-Null
+           & powercfg.exe /setactive $scheme | Out-Null
+           return @{ Scheme = $scheme; PrevAc = $prevAc; PrevDc = $prevDc }
+       }
+       Undo = {
+           param($D)
+           & powercfg.exe /setacvalueindex ([string]$D.Scheme) SUB_PROCESSOR PERFBOOSTPOLICY ([string][int]$D.PrevAc) | Out-Null
+           & powercfg.exe /setdcvalueindex ([string]$D.Scheme) SUB_PROCESSOR PERFBOOSTPOLICY ([string][int]$D.PrevDc) | Out-Null
+           & powercfg.exe /setactive ([string]$D.Scheme) | Out-Null
+       }
+       Test = {
+           $scheme = Get-ActiveSchemeGuid
+           if (-not $scheme) { return $false }
+           $out = (& powercfg.exe /q $scheme SUB_PROCESSOR PERFBOOSTPOLICY | Out-String)
+           $m = [regex]::Match($out, '(?m)Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)')
+           return [bool]($m.Success -and [Convert]::ToInt32($m.Groups[1].Value, 16) -eq 100)
+       } },
+
     @{ Id = 'power-throttling'; Category = 'cpu'; Group = 'Power'; Name = 'Turn off power throttling'; Risk = 'Medium'; Recommended = $false
        Desc = 'Stops Windows from slowing background processes to save power. No real effect on a desktop; on a laptop it reduces battery life.'
        Restart = 'restart'
        Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling' 'PowerThrottlingOff' 'DWord' 1) ) },
 
-    @{ Id = 'game-priority'; Category = 'cpu'; Group = 'Game priority'; Name = 'Fortnite priority: Above Normal'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'game-priority'; IsLaptopSafe = $true; Category = 'cpu'; Group = 'Game priority'; Name = 'Fortnite priority: Above Normal'; Risk = 'Low'; Recommended = $true
        Desc = 'Starts Fortnite at Above Normal CPU priority using the built-in Windows per-program setting (Image File Execution Options). Nothing touches the game itself, and it is never set to High or Realtime. The reference research found no ban evidence with Easy Anti-Cheat. Only Fortnite is covered.'
        Restart = 'restart'
        Registry = @( (New-RegEntry $ifeo 'CpuPriorityClass' 'DWord' 6) ) },
 
-    @{ Id = 'game-io'; Category = 'cpu'; Group = 'Game priority'; Name = 'Fortnite disk priority boost (I/O)'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'game-io'; IsLaptopSafe = $true; Category = 'cpu'; Group = 'Game priority'; Name = 'Fortnite disk priority boost (I/O)'; Risk = 'Low'; Recommended = $false
        Desc = 'Gives Fortnite High disk (I/O) priority so loading and streaming are not held up by background disk work such as updates and scans. Same per-program Windows setting as above. The gain is mostly on slower drives.'
        Restart = 'restart'
        Registry = @( (New-RegEntry $ifeo 'IoPriority' 'DWord' 3) ) },
 
-    @{ Id = 'proc-lower'; Category = 'cpu'; Group = 'Background processes'; Name = 'Lower background process priority'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'proc-lower'; IsLaptopSafe = $true; Category = 'cpu'; Group = 'Background processes'; Name = 'Lower background process priority'; Risk = 'Low'; Recommended = $false
        Desc = 'Sets your background apps (browsers, updaters, launchers) to Below Normal priority so your game gets the CPU first. System processes, anti-cheat, voice chat, recording apps, Fortnite and Epic are never touched. Windows forgets the change when an app restarts, so run it right before you play. Undo puts them back to Normal.'
        Apply = {
            $me = [System.Diagnostics.Process]::GetCurrentProcess()
@@ -1162,7 +1448,7 @@ $script:Tweaks = @(
        }
        Test = { return $script:State.ContainsKey('proc-lower') } },
 
-    @{ Id = 'last-access'; Category = 'cpu'; Group = 'Storage (I/O)'; Name = 'Faster file access (no last-access timestamps)'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'last-access'; IsLaptopSafe = $true; Category = 'cpu'; Group = 'Storage (I/O)'; Name = 'Faster file access (no last-access timestamps)'; Risk = 'Low'; Recommended = $true
        Desc = 'Stops NTFS from writing a last-accessed time every time a file is read. Fewer small disk writes; almost nothing depends on that timestamp.'
        Restart = 'restart'
        Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'NtfsDisableLastAccessUpdate' 'DWord' 1) ) },
@@ -1174,7 +1460,7 @@ $script:Tweaks = @(
        Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'GlobalTimerResolutionRequests' 'DWord' 1) ) },
 
     @{ Id = 'mmcss'; Category = 'cpu'; Group = 'Little or no effect'; Name = 'Optimize MMCSS (multimedia scheduler)'; Risk = 'Low'; Recommended = $false; Unproven = $true
-       Desc = 'Sets SystemResponsiveness = 10 and raises the Games scheduling class. The unknowntweaks research notes say Microsoft documents GPU Priority and SFIO Priority as unused, values below 10 are clamped, and Fortnite does not register with this scheduler at all, so expect no change. Included because you asked; fully reversible.'
+       Desc = 'Sets SystemResponsiveness = 10 and raises the Games scheduling class. Microsoft documents GPU Priority and SFIO Priority as unused by modern schedulers, values below 10 are clamped, and Fortnite does not register with this scheduler at all, so expect no change. Included because you asked; fully reversible.'
        Restart = 'restart'
        Registry = @(
            (New-RegEntry $mm 'SystemResponsiveness' 'DWord' 10),
@@ -1186,17 +1472,17 @@ $script:Tweaks = @(
        ) },
 
     @{ Id = 'prio-sep'; Category = 'cpu'; Group = 'Little or no effect'; Name = 'Foreground priority boost (Win32PrioritySeparation)'; Risk = 'Low'; Recommended = $false; Unproven = $true
-       Desc = 'Sets Win32PrioritySeparation to 0x26. The unknowntweaks research notes say this schedules identically to the client default, so expect no change.'
+       Desc = 'Sets Win32PrioritySeparation to 0x26. This is already the client default on most Windows installs, so expect no change.'
        Restart = 'restart'
        Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 'DWord' 38) ) },
 
     @{ Id = 'paging-exec'; Category = 'cpu'; Group = 'Little or no effect'; Name = 'Keep kernel and drivers in RAM (DisablePagingExecutive)'; Risk = 'Medium'; Recommended = $false; Unproven = $true
-       Desc = 'The unknowntweaks research notes list this as an old NT-era key with no effect on modern kernels. It is harmless with 16 GB of RAM or more but can add memory pressure on 8 GB.'
+       Desc = 'An old NT-era key with no effect on modern kernels. It is harmless with 16 GB of RAM or more but can add memory pressure on 8 GB.'
        Restart = 'restart'
        Registry = @( (New-RegEntry $memMgmt 'DisablePagingExecutive' 'DWord' 1) ) },
 
     @{ Id = 'mitigations'; Category = 'cpu'; Group = 'Security trade-offs'; Name = 'Turn off CPU vulnerability mitigations (Spectre / Meltdown)'; Risk = 'High'; Recommended = $false
-       Desc = 'Uses Microsoft documented switch (FeatureSettingsOverride) to turn off the Spectre variant 2 and Meltdown workarounds. The unknowntweaks research notes call the gain roughly zero on modern CPUs, the security loss real, and say some anti-cheats refuse to run. I included it because you asked, but my recommendation is to skip it. It does NOT touch DEP, ASLR or Exploit Protection.'
+       Desc = 'Uses a Microsoft documented switch (FeatureSettingsOverride) to turn off the Spectre variant 2 and Meltdown workarounds. The measured gain is roughly zero on modern CPUs, the security loss is real, and some anti-cheats refuse to run with it off. I included it because you asked, but my recommendation is to skip it. It does NOT touch DEP, ASLR or Exploit Protection.'
        Restart = 'restart'
        Registry = @(
            (New-RegEntry $memMgmt 'FeatureSettingsOverride' 'DWord' 3),
@@ -1208,7 +1494,7 @@ $script:Tweaks = @(
        Restart = 'restart'
        Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled' 'DWord' 0) ) },
 
-    @{ Id = 'sysmain-off'; Category = 'cpu'; Group = 'Storage (I/O)'; Name = 'Turn off SysMain (Superfetch)'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'sysmain-off'; IsLaptopSafe = $true; Category = 'cpu'; Group = 'Storage (I/O)'; Name = 'Turn off SysMain (Superfetch)'; Risk = 'Low'; Recommended = $false
        Desc = 'Stops SysMain, the service that pre-loads your most used apps into RAM. On an SSD with plenty of RAM it does little and costs some background disk and CPU work. On a hard drive, apps can open more slowly without it. Undo restores the original start mode.'
        Services = @( @{ Name = 'SysMain'; Mode = 'Disabled' } ) },
 
@@ -1234,14 +1520,14 @@ $script:Tweaks = @(
        } },
 
     # ================================ GPU OPTIMIZATIONS ================================
-    @{ Id = 'game-mode'; Category = 'gpu'; Group = 'Game features'; Name = 'Enable Game Mode'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'game-mode'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'Game features'; Name = 'Enable Game Mode'; Risk = 'Low'; Recommended = $true
        Desc = 'Tells Windows to prioritise the game you are playing and hold back background updates and driver installs while it runs. Results vary, but the default is on and it is safe.'
        Registry = @(
            (New-RegEntry 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled' 'DWord' 1),
            (New-RegEntry 'HKCU:\Software\Microsoft\GameBar' 'AllowAutoGameMode' 'DWord' 1)
        ) },
 
-    @{ Id = 'game-dvr'; Category = 'gpu'; Group = 'Game features'; Name = 'Disable Game DVR'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'game-dvr'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'Game features'; Name = 'Disable Game DVR'; Risk = 'Low'; Recommended = $true
        Desc = 'Turns off Xbox Game Bar background capture (Game DVR) for you and by policy. Background capture is a real video-encode pipeline, so this removes a small performance and stutter cost. You can still record with other tools.'
        Registry = @(
            (New-RegEntry 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 'DWord' 0),
@@ -1263,7 +1549,7 @@ $script:Tweaks = @(
            (New-RegEntry 'HKCU:\System\GameConfigStore' 'GameDVR_EFSEFeatureFlags' 'DWord' 0)
        ) },
 
-    @{ Id = 'msi-gpu'; Category = 'gpu'; Group = 'Graphics tweaks'; Name = 'Message Signaled Interrupts (MSI) on the GPU'; Risk = 'Medium'; Recommended = $false
+    @{ Id = 'msi-gpu'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'Graphics tweaks'; Name = 'Message Signaled Interrupts (MSI) on the GPU'; Risk = 'Medium'; Recommended = $false
        Desc = 'Makes your graphics card signal Windows with message-signaled interrupts, which are cheaper than the old line-based kind. Current NVIDIA and AMD drivers usually turn this on already, in which case this shows Already set. It edits the device entry of every PCI graphics card and needs a restart. Undo restores the previous values and removes the keys it created.'
        Restart = 'restart'
        Apply = {
@@ -1295,7 +1581,7 @@ $script:Tweaks = @(
            return $any
        } },
 
-    @{ Id = 'dx-windowed'; Category = 'gpu'; Group = 'DirectX tweaks'; Name = 'Optimizations for windowed games'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'dx-windowed'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'DirectX tweaks'; Name = 'Optimizations for windowed games'; Risk = 'Low'; Recommended = $true
        Desc = 'Turns on the Windows setting Optimizations for windowed games. DirectX 10 and 11 games running windowed or borderless are upgraded to the modern flip presentation model, which lowers latency and lets them use variable refresh rate. It does nothing for exclusive fullscreen or DirectX 12 games.'
        Apply = {
            $path = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
@@ -1313,7 +1599,7 @@ $script:Tweaks = @(
            return [bool]($c.Existed -and ([string]$c.Value) -match 'SwapEffectUpgradeEnable=1;')
        } },
 
-    @{ Id = 'gpu-pref-fn'; Category = 'gpu'; Group = 'DirectX tweaks'; Name = 'Fortnite: use the high-performance GPU'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'gpu-pref-fn'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'DirectX tweaks'; Name = 'Fortnite: use the high-performance GPU'; Risk = 'Low'; Recommended = $true
        Desc = 'Sets Fortnite to the High performance GPU in Windows Graphics settings. This matters on PCs with two graphics processors, such as a Ryzen G-series chip plus a graphics card, where Windows can otherwise pick the slow integrated one. Needs Fortnite installed through the Epic Games Launcher.'
        Apply = {
            $exe = Get-FortniteExe
@@ -1331,7 +1617,7 @@ $script:Tweaks = @(
            return [bool]($c.Existed -and ([string]$c.Value) -match 'GpuPreference=2;')
        } },
 
-    @{ Id = 'fso-fn'; Category = 'gpu'; Group = 'Fullscreen tweaks'; Name = 'Fortnite: turn off fullscreen optimizations'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'fso-fn'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'Fullscreen tweaks'; Name = 'Fortnite: turn off fullscreen optimizations'; Risk = 'Low'; Recommended = $false
        Desc = 'Ticks Disable fullscreen optimizations on the Fortnite program itself. Windows ignores this for DirectX 12, so it only helps when Fortnite runs in DirectX 11 (for example with the -d3d11 launch command). Needs Fortnite installed through the Epic Games Launcher.'
        Apply = {
            $exe = Get-FortniteExe
@@ -1355,7 +1641,7 @@ $script:Tweaks = @(
        } },
 
     # ================================ KBM OPTIMIZATIONS ================================
-    @{ Id = 'sticky-keys'; Category = 'kbm'; Group = 'Keyboard'; Name = 'Disable Sticky Keys and Filter Keys popups'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'sticky-keys'; IsLaptopSafe = $true; Category = 'kbm'; Group = 'Keyboard'; Name = 'Disable Sticky Keys and Filter Keys popups'; Risk = 'Low'; Recommended = $true
        Desc = 'Stops the popup that appears when you press Shift five times or hold Shift, which can minimize your game mid-fight. The accessibility features themselves stay available in Settings.'
        Registry = @(
            (New-RegEntry 'HKCU:\Control Panel\Accessibility\StickyKeys' 'Flags' 'String' '506'),
@@ -1363,7 +1649,7 @@ $script:Tweaks = @(
            (New-RegEntry 'HKCU:\Control Panel\Accessibility\ToggleKeys' 'Flags' 'String' '58')
        ) },
 
-    @{ Id = 'kb-speed'; Category = 'kbm'; Group = 'Keyboard'; Name = 'Fastest keyboard repeat rate'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'kb-speed'; IsLaptopSafe = $true; Category = 'kbm'; Group = 'Keyboard'; Name = 'Fastest keyboard repeat rate'; Risk = 'Low'; Recommended = $false
        Desc = 'Shortest delay before a held key repeats and the fastest repeat speed, the same as moving both sliders in Keyboard settings to the maximum.'
        Restart = 'sign-out'
        Registry = @(
@@ -1414,7 +1700,7 @@ $script:Tweaks = @(
            (New-RegEntry 'HKCU:\Control Panel\Mouse' 'MouseThreshold2' 'String' '0')
        ) },
 
-    @{ Id = 'fn-rawinput'; Category = 'aim'; Group = 'Mouse'; Name = 'Raw Input on (Fortnite)'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'fn-rawinput'; IsLaptopSafe = $true; Category = 'aim'; Group = 'Mouse'; Name = 'Raw Input on (Fortnite)'; Risk = 'Low'; Recommended = $false
        Desc = 'Turns on raw mouse input and turns off the game mouse acceleration setting in your Fortnite settings file, so the game reads your mouse directly. The exact setting names are matched against your own file, so start Fortnite once first. Close Fortnite before applying. A backup is made and Undo restores it.'
        Apply = {
            $ini = Get-FortniteGameIni
@@ -1478,7 +1764,7 @@ $script:Tweaks = @(
        } },
 
     # ================================ DEBLOATING ================================
-    @{ Id = 'widgets'; Category = 'debloat'; Group = 'Useless features'; Name = 'Turn off Widgets and news feeds'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'widgets'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Useless features'; Name = 'Turn off Widgets and news feeds'; Risk = 'Low'; Recommended = $false
        Desc = 'Disables the Windows 11 Widgets board and the Windows 10 news and interests feed, including their background processes.'
        Restart = 'sign-out'
        Registry = @(
@@ -1486,7 +1772,7 @@ $script:Tweaks = @(
            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds' 'EnableFeeds' 'DWord' 0)
        ) },
 
-    @{ Id = 'edge-bg'; Category = 'debloat'; Group = 'Useless features'; Name = 'Stop Edge running in the background'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'edge-bg'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Useless features'; Name = 'Stop Edge running in the background'; Risk = 'Low'; Recommended = $true
        Desc = 'Turns off Edge startup boost and background mode so it does not keep processes alive after you close it. Edge itself still works.'
        Registry = @(
            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'StartupBoostEnabled' 'DWord' 0),
@@ -1504,7 +1790,7 @@ $script:Tweaks = @(
            (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance' 'fAllowFullControl' 'DWord' 0)
        ) },
 
-    @{ Id = 'activity-history'; Category = 'debloat'; Group = 'Useless features'; Name = 'Turn off activity history'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'activity-history'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Useless features'; Name = 'Turn off activity history'; Risk = 'Low'; Recommended = $true
        Desc = 'Stops Windows from recording and uploading the apps and files you open (the Timeline feature).'
        Registry = @(
            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'EnableActivityFeed' 'DWord' 0),
@@ -1512,7 +1798,7 @@ $script:Tweaks = @(
            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'UploadUserActivities' 'DWord' 0)
        ) },
 
-    @{ Id = 'win-tips'; Category = 'debloat'; Group = 'Useless features'; Name = 'Turn off Windows tips and welcome screens'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'win-tips'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Useless features'; Name = 'Turn off Windows tips and welcome screens'; Risk = 'Low'; Recommended = $true
        Desc = 'Stops the tips, tricks and finish-setting-up-your-device prompts that pop up after updates.'
        Registry = @(
            (New-RegEntry $cdm 'SubscribedContent-310093Enabled' 'DWord' 0),
@@ -1523,7 +1809,7 @@ $script:Tweaks = @(
            (New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement' 'ScoobeSystemSettingEnabled' 'DWord' 0)
        ) },
 
-    @{ Id = 'suggestions'; Category = 'debloat'; Group = 'Ads and suggestions'; Name = 'Remove Start menu suggestions and promoted apps'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'suggestions'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Ads and suggestions'; Name = 'Remove Start menu suggestions and promoted apps'; Risk = 'Low'; Recommended = $true
        Desc = 'Stops Windows from suggesting apps and silently installing promoted ones (the pre-installed game and app spam).'
        Registry = @(
            (New-RegEntry $cdm 'SubscribedContent-338388Enabled' 'DWord' 0),
@@ -1534,20 +1820,20 @@ $script:Tweaks = @(
            (New-RegEntry $cdm 'SilentInstalledAppsEnabled' 'DWord' 0)
        ) },
 
-    @{ Id = 'ad-id'; Category = 'debloat'; Group = 'Ads and suggestions'; Name = 'Turn off advertising ID'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'ad-id'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Ads and suggestions'; Name = 'Turn off advertising ID'; Risk = 'Low'; Recommended = $true
        Desc = 'Stops apps from using a per-user ID to show you targeted ads.'
        Registry = @( (New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo' 'Enabled' 'DWord' 0) ) },
 
-    @{ Id = 'tailored'; Category = 'debloat'; Group = 'Ads and suggestions'; Name = 'Turn off tailored experiences'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'tailored'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Ads and suggestions'; Name = 'Turn off tailored experiences'; Risk = 'Low'; Recommended = $true
        Desc = 'Stops Windows from using your diagnostic data to personalise tips, ads and recommendations.'
        Registry = @( (New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy' 'TailoredExperiencesWithDiagnosticDataEnabled' 'DWord' 0) ) },
 
-    @{ Id = 'bing-search'; Category = 'debloat'; Group = 'Ads and suggestions'; Name = 'Turn off web results in Start search'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'bing-search'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Ads and suggestions'; Name = 'Turn off web results in Start search'; Risk = 'Low'; Recommended = $true
        Desc = 'Start search stays local (apps, files, settings) and stops sending what you type to Bing.'
        Restart = 'sign-out'
        Registry = @( (New-RegEntry 'HKCU:\Software\Policies\Microsoft\Windows\Explorer' 'DisableSearchBoxSuggestions' 'DWord' 1) ) },
 
-    @{ Id = 'telemetry-policy'; Category = 'debloat'; Group = 'Telemetry'; Name = 'Set diagnostic data to the minimum'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'telemetry-policy'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Telemetry'; Name = 'Set diagnostic data to the minimum'; Risk = 'Low'; Recommended = $true
        Desc = 'Sets the telemetry policy to its lowest level. On Windows Home and Pro the floor is Required data; only Enterprise and Education can go fully to zero.'
        Registry = @( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry' 'DWord' 0) ) },
 
@@ -1556,7 +1842,7 @@ $script:Tweaks = @(
        Services = @( @{ Name = 'DiagTrack'; Mode = 'Disabled' } ) },
 
     # ================================ NETWORK OPTIMIZATIONS ================================
-    @{ Id = 'rss'; Category = 'net'; Group = 'Network processing'; Name = 'Enable multi-core network processing (RSS)'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'rss'; IsLaptopSafe = $true; Category = 'net'; Group = 'Network processing'; Name = 'Enable multi-core network processing (RSS)'; Risk = 'Low'; Recommended = $true
        Desc = 'Turns on Receive Side Scaling on your connected network adapters so incoming traffic is processed across several CPU cores instead of one. Most adapters already have it on. Your connection may drop for a moment while the adapter restarts. Adapters that do not support RSS are skipped.'
        Apply = {
            $prior = @()
@@ -1586,19 +1872,19 @@ $script:Tweaks = @(
            return $any
        } },
 
-    @{ Id = 'delivery-opt'; Category = 'net'; Group = 'Network processing'; Name = 'Stop sharing Windows updates with other PCs'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'delivery-opt'; IsLaptopSafe = $true; Category = 'net'; Group = 'Network processing'; Name = 'Stop sharing Windows updates with other PCs'; Risk = 'Low'; Recommended = $true
        Desc = 'Delivery Optimization can upload Windows updates to other PCs over your internet connection. This sets it to download from Microsoft only, which saves upload bandwidth (good for online games).'
        Registry = @( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 'DWord' 0) ) },
 
     @{ Id = 'net-throttle'; Category = 'net'; Group = 'Little or no effect'; Name = 'Remove network throttling and limits'; Risk = 'Low'; Recommended = $false; Unproven = $true
-       Desc = 'Possibly slightly worse than leaving it alone. Sets NetworkThrottlingIndex to off and removes the QoS reserved-bandwidth limit. The unknowntweaks research notes say the throttle only limits non-multimedia traffic far above what a game sends, and one measurement found network driver latency going up when it is removed. Included because you asked; fully reversible.'
+       Desc = 'Possibly slightly worse than leaving it alone. Sets NetworkThrottlingIndex to off and removes the QoS reserved-bandwidth limit. The throttle only limits non-multimedia traffic far above what a game sends, and independent testing has found network driver latency going up when it is removed. Included because you asked; fully reversible.'
        Restart = 'restart'
        Registry = @(
            (New-RegEntry $mm 'NetworkThrottlingIndex' 'DWord' -1),
            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit' 'DWord' 0)
        ) },
 
-    @{ Id = 'nagle'; Category = 'net'; Group = 'Little or no effect'; Name = "Disable Nagle's algorithm"; Risk = 'Low'; Recommended = $false; Unproven = $true
+    @{ Id = 'nagle'; IsLaptopSafe = $true; Category = 'net'; Group = 'Little or no effect'; Name = "Disable Nagle's algorithm"; Risk = 'Low'; Recommended = $false; Unproven = $true
        Desc = 'Sets TcpAckFrequency and TCPNoDelay on your active connections. This only affects TCP, and Fortnite and VALORANT gameplay traffic is UDP, so expect no change in those. It can help some TCP-based games and apps. Undo restores each connection exactly as it was.'
        Restart = 'restart'
        Apply = {
@@ -1660,7 +1946,7 @@ $script:Tweaks = @(
        } },
 
     # ================================ APP OPTIMIZER ================================
-    @{ Id = 'chrome-default'; Category = 'apps'; Group = 'Browser'; Name = 'Make Chrome your default browser'; Risk = 'Low'; Recommended = $false; OneShot = $true
+    @{ Id = 'chrome-default'; IsLaptopSafe = $true; Category = 'apps'; Group = 'Browser'; Name = 'Make Chrome your default browser'; Risk = 'Low'; Recommended = $false; OneShot = $true
        Desc = 'Windows does not let programs change the default browser silently (it is protected to stop hijacking). This checks that Chrome is installed and opens the exact Settings page, where you confirm with one click. If Chrome is missing, it opens the download page.'
        Apply = {
            $chrome = $null
@@ -1682,76 +1968,35 @@ $script:Tweaks = @(
        Registry = @( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy' 'LetAppsRunInBackground' 'DWord' 2) ) },
 
     # ================================ EXTRA TWEAKS ================================
-    @{ Id = 'fn-launch'; Category = 'extra'; Group = 'Fortnite'; Name = 'Fortnite launch commands: -d3d11 and -NOSPLASH'; Risk = 'Low'; Recommended = $false
-       Desc = 'What these do: -d3d11 makes Fortnite draw with the older DirectX 11 renderer, the old Performance Mode, which can give more FPS and steadier frame times on many PCs but has fewer visual features. -NOSPLASH skips the intro splash screen so the game starts a few seconds faster. Compact Tweaks writes them into the Additional Command Line Arguments box for Fortnite in the Epic Games Launcher (the same place you would type them by hand). It closes the launcher for a moment and starts it again, and any arguments you already had are kept. On a very new graphics card DirectX 12 can be faster, so test both.'
-       Apply = {
-           $ini = Get-EpicLauncherIni
-           if (-not $ini) { throw 'The Epic Games Launcher settings file was not found. Open the launcher once, signed in, then try again.' }
-           $wasOpen = Stop-EpicLauncher
-           try {
-               $f = Read-TextFile $ini
-               $acct = Get-EpicAccountId $f.Text
-               if (-not $acct) { throw 'Could not read your Epic account id. Open the Epic Games Launcher once and try again.' }
-               $sec = $acct + '_Settings'
-               $prefix = Get-FortniteArgPrefix $f.Text
-               $lines = ConvertTo-IniLines $f.Text
-               $prevCmd = Get-IniValue $lines $sec ($prefix + '_AdditionalCommands')
-               $prevEn  = Get-IniValue $lines $sec ($prefix + '_AdditionalCommandsEnabled')
-               $tokens = @()
-               if ($prevCmd) { $tokens = @($prevCmd -split '\s+' | Where-Object { $_ }) }
-               foreach ($t in @('-d3d11', '-NOSPLASH')) {
-                   if (-not @($tokens | Where-Object { $_ -ieq $t })) { $tokens += $t }
-               }
-               [void](Backup-FileSafe $ini)
-               [void](Set-IniKey -Lines $lines -Section $sec -Key ($prefix + '_AdditionalCommands') -Value ($tokens -join ' ') -AddIfMissing)
-               [void](Set-IniKey -Lines $lines -Section $sec -Key ($prefix + '_AdditionalCommandsEnabled') -Value 'True' -AddIfMissing)
-               Save-IniLines $ini $lines $f
-               Write-Log ('Fortnite launch arguments now: ' + ($tokens -join ' ')) 'Ok'
-               return @{ File = $ini; Section = $sec; Prefix = $prefix; PrevCmd = $prevCmd; PrevEnabled = $prevEn }
-           } finally {
-               if ($wasOpen) { Start-EpicLauncher }
-           }
-       }
-       Undo = {
-           param($D)
-           if (-not (Test-Path -LiteralPath $D.File)) { throw 'The Epic launcher settings file is gone, nothing to restore.' }
-           $wasOpen = Stop-EpicLauncher
-           try {
-               $f = Read-TextFile $D.File
-               $lines = ConvertTo-IniLines $f.Text
-               $kc = $D.Prefix + '_AdditionalCommands'
-               $ke = $D.Prefix + '_AdditionalCommandsEnabled'
-               if ($null -ne $D.PrevCmd) { [void](Set-IniKey -Lines $lines -Section $D.Section -Key $kc -Value ([string]$D.PrevCmd) -AddIfMissing) } else { Remove-IniKey $lines $D.Section $kc }
-               if ($null -ne $D.PrevEnabled) { [void](Set-IniKey -Lines $lines -Section $D.Section -Key $ke -Value ([string]$D.PrevEnabled) -AddIfMissing) } else { Remove-IniKey $lines $D.Section $ke }
-               Save-IniLines $D.File $lines $f
-           } finally {
-               if ($wasOpen) { Start-EpicLauncher }
-           }
-       }
-       Test = {
-           $ini = Get-EpicLauncherIni
-           if (-not $ini) { return $false }
-           $f = Read-TextFile $ini
-           $acct = Get-EpicAccountId $f.Text
-           if (-not $acct) { return $false }
-           $lines = ConvertTo-IniLines $f.Text
-           $prefix = Get-FortniteArgPrefix $f.Text
-           $cmd = Get-IniValue $lines ($acct + '_Settings') ($prefix + '_AdditionalCommands')
-           $en  = Get-IniValue $lines ($acct + '_Settings') ($prefix + '_AdditionalCommandsEnabled')
-           return [bool]($cmd -and ($cmd -match '(?i)(^|\s)-d3d11(\s|$)') -and ($cmd -match '(?i)(^|\s)-NOSPLASH(\s|$)') -and ($en -ieq 'True'))
-       } },
+    @{ Id = 'fn-nosplash'; IsLaptopSafe = $true; Category = 'extra'; Group = 'Fortnite'; Name = '-NOSPLASH: skip the intro splash screen'; Risk = 'Low'; Recommended = $false
+       Desc = 'Skips the intro splash screen so the game starts a few seconds faster.'
+       Apply = { Set-FnLaunchArg 'NOSPLASH' $true }
+       Undo = { Set-FnLaunchArg 'NOSPLASH' $false }
+       Test = { return (Test-FnLaunchArg 'NOSPLASH') } },
 
-    @{ Id = 'startup-delay'; Category = 'extra'; Group = 'Registry tweaks'; Name = 'Remove startup app delay'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'fn-high-d3d11'; IsLaptopSafe = $true; Category = 'extra'; Group = 'Fortnite'; Name = '-high -d3d11: Legacy Performance Mode'; Risk = 'Low'; Recommended = $false
+       Desc = 'Brings back the Legacy Performance Mode and drastically improves FPS and steadies frame times on many systems. On a very new graphics card, current DirectX 12 Performance Mode can be faster, so test both.'
+       Apply = { Set-FnLaunchArg 'HIGH_D3D11' $true }
+       Undo = { Set-FnLaunchArg 'HIGH_D3D11' $false }
+       Test = { return (Test-FnLaunchArg 'HIGH_D3D11') } },
+
+    @{ Id = 'fn-featurelevel'; IsLaptopSafe = $true; Category = 'extra'; Group = 'Fortnite'; Name = '-FeatureLevelES31: force Performance Mode'; Risk = 'Low'; Recommended = $false
+       Desc = 'Forces the game to prefer launching in Performance Mode.'
+       Apply = { Set-FnLaunchArg 'FEATURELEVEL' $true }
+       Undo = { Set-FnLaunchArg 'FEATURELEVEL' $false }
+       Test = { return (Test-FnLaunchArg 'FEATURELEVEL') } },
+
+    @{ Id = 'startup-delay'; IsLaptopSafe = $true; Category = 'windows'; Group = 'Startup and shutdown'; Name = 'Remove startup app delay'; Risk = 'Low'; Recommended = $true
        Desc = 'Windows waits several seconds after sign-in before launching your startup apps. This removes the wait so the desktop is ready sooner.'
        Restart = 'sign-out'
        Registry = @( (New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize' 'StartupDelayInMSec' 'DWord' 0) ) },
 
-    @{ Id = 'fast-startup'; Category = 'extra'; Group = 'Registry tweaks'; Name = 'Turn off Fast Startup'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'fast-startup'; IsLaptopSafe = $true; Category = 'windows'; Group = 'Startup and shutdown'; Name = 'Turn off Fast Startup'; Risk = 'Low'; Recommended = $true
        Desc = 'Makes Shut down a real shutdown, so drivers and the kernel start clean every boot instead of resuming a saved session. Fixes odd driver and update problems; cold boot can be a couple of seconds slower. Hibernation itself stays available.'
        Restart = 'restart'
        Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled' 'DWord' 0) ) },
 
-    @{ Id = 'animations'; Category = 'extra'; Group = 'Registry tweaks'; Name = 'Reduce window animations'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'animations'; IsLaptopSafe = $true; Category = 'windows'; Group = 'Visual effects'; Name = 'Reduce window animations'; Risk = 'Low'; Recommended = $false
        Desc = 'Turns off minimize/maximize and taskbar animations. Cosmetic, but it can feel faster on older hardware.'
        Restart = 'sign-out'
        Registry = @(
@@ -1759,16 +2004,16 @@ $script:Tweaks = @(
            (New-RegEntry $explorerAdv 'TaskbarAnimations' 'DWord' 0)
        ) },
 
-    @{ Id = 'transparency'; Category = 'extra'; Group = 'Registry tweaks'; Name = 'Turn off transparency effects'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'transparency'; IsLaptopSafe = $true; Category = 'windows'; Group = 'Visual effects'; Name = 'Turn off transparency effects'; Risk = 'Low'; Recommended = $false
        Desc = 'Disables the blur and transparency on the taskbar, Start and windows. Saves a little GPU work, mostly on weak graphics.'
        Registry = @( (New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency' 'DWord' 0) ) },
 
-    @{ Id = 'menu-delay'; Category = 'extra'; Group = 'Menus and shutdown'; Name = 'Instant menu popups'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'menu-delay'; IsLaptopSafe = $true; Category = 'windows'; Group = 'Startup and shutdown'; Name = 'Instant menu popups'; Risk = 'Low'; Recommended = $true
        Desc = 'Sets the delay before menus open to zero, so right-click and submenus feel snappier.'
        Restart = 'sign-out'
        Registry = @( (New-RegEntry 'HKCU:\Control Panel\Desktop' 'MenuShowDelay' 'String' '0') ) },
 
-    @{ Id = 'faster-shutdown'; Category = 'extra'; Group = 'Menus and shutdown'; Name = 'Faster app shutdown (kill time)'; Risk = 'Medium'; Recommended = $false
+    @{ Id = 'faster-shutdown'; IsLaptopSafe = $true; Category = 'windows'; Group = 'Startup and shutdown'; Name = 'Faster app shutdown (kill time)'; Risk = 'Medium'; Recommended = $false
        Desc = 'Shortens how long Windows waits for apps to close before forcing them to 2 seconds. Apps that are slow to save may lose unsaved data on shutdown. Affects shutdown speed only, not FPS.'
        Restart = 'sign-out'
        Registry = @(
@@ -1776,27 +2021,27 @@ $script:Tweaks = @(
            (New-RegEntry 'HKCU:\Control Panel\Desktop' 'HungAppTimeout' 'String' '2000')
        ) },
 
-    @{ Id = 'kill-service'; Category = 'extra'; Group = 'Menus and shutdown'; Name = 'Faster service shutdown (kill time)'; Risk = 'Medium'; Recommended = $false
+    @{ Id = 'kill-service'; IsLaptopSafe = $true; Category = 'windows'; Group = 'Startup and shutdown'; Name = 'Faster service shutdown (kill time)'; Risk = 'Medium'; Recommended = $false
        Desc = 'Shortens how long Windows waits for background services to stop at shutdown to 2 seconds. Services that need longer to save (databases, some backup tools) may be cut off. Affects shutdown speed only.'
        Restart = 'restart'
        Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control' 'WaitToKillServiceTimeout' 'String' '2000') ) },
 
-    @{ Id = 'file-ext'; Category = 'extra'; Group = 'Explorer'; Name = 'Show file extensions'; Risk = 'Low'; Recommended = $true
+    @{ Id = 'file-ext'; IsLaptopSafe = $true; Category = 'extra'; Group = 'Explorer'; Name = 'Show file extensions'; Risk = 'Low'; Recommended = $true
        Desc = 'Always shows .exe, .png, .txt and so on. Helpful for spotting disguised files such as photo.jpg.exe.'
        Registry = @( (New-RegEntry $explorerAdv 'HideFileExt' 'DWord' 0) ) },
 
-    @{ Id = 'this-pc'; Category = 'extra'; Group = 'Explorer'; Name = 'Open File Explorer to This PC'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'this-pc'; IsLaptopSafe = $true; Category = 'extra'; Group = 'Explorer'; Name = 'Open File Explorer to This PC'; Risk = 'Low'; Recommended = $false
        Desc = 'File Explorer opens on your drives instead of Home / Quick access.'
        Registry = @( (New-RegEntry $explorerAdv 'LaunchTo' 'DWord' 1) ) },
 
-    @{ Id = 'no-recent'; Category = 'extra'; Group = 'Explorer'; Name = 'Hide recent and frequent files in Quick access'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'no-recent'; IsLaptopSafe = $true; Category = 'extra'; Group = 'Explorer'; Name = 'Hide recent and frequent files in Quick access'; Risk = 'Low'; Recommended = $false
        Desc = 'File Explorer stops listing recently opened files and frequently used folders. Cleaner, and a small privacy gain.'
        Registry = @(
            (New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer' 'ShowRecent' 'DWord' 0),
            (New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer' 'ShowFrequent' 'DWord' 0)
        ) },
 
-    @{ Id = 'classic-menu'; Category = 'extra'; Group = 'Explorer'; Name = 'Classic right-click menu (Windows 11)'; Risk = 'Low'; Recommended = $false
+    @{ Id = 'classic-menu'; IsLaptopSafe = $true; Category = 'extra'; Group = 'Explorer'; Name = 'Classic right-click menu (Windows 11)'; Risk = 'Low'; Recommended = $false
        Desc = 'Brings back the full right-click menu without having to click Show more options every time.'
        Restart = 'sign-out'
        Guard = { (Get-WinBuild) -ge 22000 }
@@ -1834,7 +2079,390 @@ $script:Tweaks = @(
        Apply = {
            try { Clear-RecycleBin -Force -ErrorAction Stop; Write-Log 'Recycle Bin emptied' 'Ok' }
            catch { Write-Log ('Recycle Bin: ' + $_.Exception.Message) 'Warn' }
-       } }
+       } },
+    # ============================ NEW: WINDOWS TWEAKS ============================
+    @{ Id = 'uac-off'; Category = 'windows'; Group = 'System settings'; Name = 'Disable UAC (User Account Control)'; Risk = 'High'; Recommended = $false
+       Desc = 'Turns off the Yes/No prompt Windows shows before a program can make system-wide changes. Faster to click through, but any program (including malware) can then change your system silently. Only for a PC you trust completely. Undo restores the prompt.'
+       Registry = @( (New-RegEntry 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA' 'DWord' 0) )
+       Restart = 'restart' },
+
+    @{ Id = 'insider-off'; IsLaptopSafe = $true; Category = 'windows'; Group = 'System settings'; Name = 'Disable Windows Insider Program'; Risk = 'Low'; Recommended = $true
+       Desc = 'Stops this PC from being able to enrol in Windows Insider preview builds, so you never get an early, less stable Windows update by mistake.'
+       Registry = @( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsInsider' 'AllowInsiderInstalls' 'DWord' 0) ) },
+
+    @{ Id = 'hibernation-off'; Category = 'windows'; Group = 'System settings'; Name = 'Disable Hibernation'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Turns off hibernation and deletes hiberfil.sys, freeing disk space equal to your RAM size. This also turns off Fast Startup, since Fast Startup depends on hibernation. Skip this if you rely on hibernating instead of shutting down, especially on a laptop.'
+       Apply = {
+           $out = (& powercfg.exe /hibernate off 2>&1 | Out-String)
+           if ($LASTEXITCODE -ne 0) { throw ('powercfg could not turn off hibernation: ' + $out) }
+       }
+       Undo = { & powercfg.exe /hibernate on 2>&1 | Out-Null }
+       Test = { return -not (Test-Path -LiteralPath (Join-Path $env:SystemDrive 'hiberfil.sys')) } },
+
+    @{ Id = 'svchost-split'; IsLaptopSafe = $true; Category = 'windows'; Group = 'Memory and cache'; Name = 'Raise the svchost.exe process-splitting threshold'; Risk = 'Low'; Recommended = $false
+       Desc = 'Windows 10 and 11 give each service its own svchost.exe process once you have more than about 3.5 GB of RAM, which uses more memory but isolates crashes. Raising this threshold lets more services share fewer svchost.exe processes again, similar to older Windows, trading a little isolation for a lower process count. Needs a restart.'
+       Restart = 'restart'
+       Apply = {
+           $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1KB)
+           $snap = Get-RegSnapshot 'HKLM:\SYSTEM\CurrentControlSet\Control' 'SvcHostSplitThresholdInKB'
+           Set-RegValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name 'SvcHostSplitThresholdInKB' -Type 'DWord' -Value $ram
+           return @{ Saved = @($snap) }
+       }
+       Undo = { param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
+       Test = {
+           $c = Get-RegSnapshot 'HKLM:\SYSTEM\CurrentControlSet\Control' 'SvcHostSplitThresholdInKB'
+           return [bool]($c.Existed -and [int64]$c.Value -gt 3800000)
+       } },
+
+    @{ Id = 'prefetch-tune'; IsLaptopSafe = $true; Category = 'windows'; Group = 'Memory and cache'; Name = 'Tune Prefetch for your boot drive'; Risk = 'Low'; Recommended = $false
+       Desc = 'Prefetch pre-loads apps you use often. On an SSD it mostly just adds disk writes for no benefit, so this turns it off if your boot drive is an SSD, or turns on full prefetching if it is a hard drive. Detected on this PC: this is decided automatically each time you apply it.'
+       Apply = {
+           $ssd = Get-BootDriveIsSsd
+           $path = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters'
+           $val = 3; if ($ssd) { $val = 0 }
+           $snap = Get-RegSnapshot $path 'EnablePrefetcher'
+           Set-RegValue -Path $path -Name 'EnablePrefetcher' -Type 'DWord' -Value $val
+           Write-Log ('Boot drive detected as {0}, EnablePrefetcher set to {1}' -f $(if ($ssd) { 'SSD' } else { 'HDD' }), $val)
+           return @{ Saved = @($snap) }
+       }
+       Undo = { param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
+       Test = {
+           $ssd = Get-BootDriveIsSsd
+           $c = Get-RegSnapshot 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters' 'EnablePrefetcher'
+           if (-not $c.Existed) { return $false }
+           if ($ssd) { return [int]$c.Value -eq 0 }
+           return [int]$c.Value -eq 3
+       } },
+
+    @{ Id = 'coalescing-off'; Category = 'windows'; Group = 'Latency'; Name = 'Disable timer coalescing (CoalescingTimerInterval)'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Stops Windows grouping small background timers together to save power (timer coalescing). Can very slightly reduce background latency at the cost of a bit more idle power use. Undo restores the previous value.'
+       Restart = 'restart'
+       Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'DistributeTimers' 'DWord' 0) ) },
+
+    @{ Id = 'energy-telemetry-off'; IsLaptopSafe = $true; Category = 'windows'; Group = 'Telemetry and diagnostics'; Name = 'Disable energy estimation and power telemetry'; Risk = 'Low'; Recommended = $false
+       Desc = 'Turns off the scheduled task that runs Windows Power Efficiency Diagnostics in the background and estimates per-app energy use. Purely diagnostic; turning it off does not change how your PC actually uses power, it just stops Windows from measuring and logging it. Undo turns the task back on.'
+       Apply = {
+           $touched = Disable-ScheduledTaskList @('\Microsoft\Windows\Power Efficiency Diagnostics\AnalyzeSystem')
+           return @{ Tasks = $touched }
+       }
+       Undo = { param($D) Enable-ScheduledTaskList @($D.Tasks) }
+       Test = {
+           try { $t = Get-ScheduledTask -TaskName 'AnalyzeSystem' -TaskPath '\Microsoft\Windows\Power Efficiency Diagnostics\' -ErrorAction Stop; return $t.State -eq 'Disabled' }
+           catch { return $false }
+       } },
+
+    @{ Id = 'idle-power-off'; Category = 'cpu'; Group = 'Power'; Name = 'Disable processor idle power management'; Risk = 'High'; Recommended = $false
+       Desc = 'Stops the CPU from dropping into deeper idle (C-state) power-saving modes on the active power plan, so it responds faster coming out of idle. Raises idle temperature and power use noticeably, and does the opposite of what you want on a laptop. Desktops only.'
+       Apply = {
+           $scheme = Get-ActiveSchemeGuid
+           if (-not $scheme) { throw 'Could not read the active power plan.' }
+           & powercfg.exe /setacvalueindex $scheme SUB_PROCESSOR IDLEDISABLE 1 | Out-Null
+           & powercfg.exe /setactive $scheme | Out-Null
+           return @{ Scheme = $scheme }
+       }
+       Undo = {
+           param($D)
+           & powercfg.exe /setacvalueindex ([string]$D.Scheme) SUB_PROCESSOR IDLEDISABLE 0 | Out-Null
+           & powercfg.exe /setactive ([string]$D.Scheme) | Out-Null
+       }
+       Test = {
+           $scheme = Get-ActiveSchemeGuid
+           if (-not $scheme) { return $false }
+           $out = (& powercfg.exe /q $scheme SUB_PROCESSOR IDLEDISABLE | Out-String)
+           $m = [regex]::Match($out, '(?m)Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)')
+           return [bool]($m.Success -and [Convert]::ToInt32($m.Groups[1].Value, 16) -eq 1)
+       } },
+
+    @{ Id = 'sehop-off'; Category = 'cpu'; Group = 'Security trade-offs'; Name = 'Disable SEHOP'; Risk = 'High'; Recommended = $false
+       Desc = 'Turns off Structured Exception Handling Overwrite Protection, a Microsoft-documented exploit mitigation, separate from the Spectre/Meltdown tweak above. Essentially no measurable performance gain on modern CPUs, so this is included for completeness rather than because I recommend it.'
+       Restart = 'restart'
+       Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'DisableExceptionChainValidation' 'DWord' 1) ) },
+
+    # ============================ NEW: DEBLOATING (process/startup trimming) ============================
+    @{ Id = 'trim-updaters'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Trim background services and startup'; Name = 'Turn off third-party updater and elevation services'; Risk = 'Medium'; Recommended = $false
+       Desc = 'The same idea as unticking non-Microsoft updater services in System Configuration (msconfig): finds non-Microsoft services whose name looks like an updater or elevation helper and sets them to Manual (not Disabled), so they stop starting automatically but nothing is removed. Logitech G HUB'"'"'s updater is always left alone because turning it off breaks G HUB. Undo restores each service'"'"'s original start mode.'
+       Apply = {
+           $found = @(Get-ThirdPartyUpdaterServices)
+           if ($found.Count -eq 0) { throw 'No matching third-party updater or elevation services were found.' }
+           $saved = @()
+           foreach ($s in $found) {
+               $saved += (Get-SvcSnapshot $s.Name)
+               try { Set-SvcStart -Name $s.Name -Mode 'Manual' } catch { }
+           }
+           Write-Log ('Set {0} third-party updater service(s) to Manual: {1}' -f $found.Count, (($found | ForEach-Object { $_.Name }) -join ', ')) 'Ok'
+           return @{ Saved = $saved }
+       }
+       Undo = {
+           param($D)
+           foreach ($s in @($D.Saved)) {
+               if ($s -and $s.Exists) { try { Set-SvcStart -Name $s.Name -Mode $s.Mode -Delayed ([bool]$s.Delayed) } catch { } }
+           }
+       }
+       Test = { return $script:State.ContainsKey('trim-updaters') } },
+
+    @{ Id = 'trim-startup'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Trim background services and startup'; Name = 'Disable third-party sign-in startup entries'; Risk = 'Medium'; Recommended = $false
+       Desc = 'The same idea as Autoruns'"'"'s Logon tab: goes through your Run/RunOnce startup entries and disables every one except entries that launch cmd.exe, using the same StartupApproved flag Task Manager'"'"'s Startup tab uses, so disabled apps show as Disabled there too and nothing is deleted. Undo re-enables everything this turned off.'
+       Apply = {
+           $entries = @(Get-RunKeyEntries)
+           if ($entries.Count -eq 0) { throw 'No startup entries were found to disable.' }
+           $touched = @()
+           foreach ($e in $entries) {
+               $prevBytes = $null
+               try { $prevBytes = (Get-ItemProperty -LiteralPath $e.ApprovedPath -Name $e.Name -ErrorAction Stop).($e.Name) } catch { }
+               if ($prevBytes -and $prevBytes.Length -gt 0 -and $prevBytes[0] -eq 3) { continue }
+               Set-StartupApprovedDisabled -Path $e.ApprovedPath -Name $e.Name -Disabled $true
+               $touched += @{ ApprovedPath = $e.ApprovedPath; Name = $e.Name; PrevBytes = $prevBytes }
+           }
+           if ($touched.Count -eq 0) { throw 'Every startup entry was already disabled.' }
+           Write-Log ('Disabled {0} startup entr{1}: {2}' -f $touched.Count, $(if ($touched.Count -eq 1) { 'y' } else { 'ies' }), (($touched | ForEach-Object { $_.Name }) -join ', ')) 'Ok'
+           return @{ Touched = $touched }
+       }
+       Undo = {
+           param($D)
+           foreach ($t in @($D.Touched)) {
+               if (-not $t) { continue }
+               if ($t.PrevBytes) { New-ItemProperty -LiteralPath $t.ApprovedPath -Name $t.Name -Value $t.PrevBytes -PropertyType Binary -Force | Out-Null }
+               else { Set-StartupApprovedDisabled -Path $t.ApprovedPath -Name $t.Name -Disabled $false }
+           }
+       }
+       Test = { return $script:State.ContainsKey('trim-startup') } },
+
+    @{ Id = 'trim-services'; Category = 'debloat'; Group = 'Trim background services and startup'; Name = 'Disable a curated list of unused Windows services'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Disables Fax, Remote Registry, Downloaded Maps Manager, Retail Demo, Windows Media Player Network Sharing, Wallet Service, Phone Service and the touch-keyboard/handwriting service, only for the ones you actually have. Skip this if you use a stylus, a touchscreen keyboard, or a phone-link feature. Undo restores every one to its original start mode.'
+       Apply = {
+           $saved = @()
+           foreach ($x in $script:SafeToDisableServices) {
+               $cur = Get-SvcSnapshot $x.Name
+               if (-not $cur.Exists) { continue }
+               $saved += $cur
+               try { Set-SvcStart -Name $x.Name -Mode 'Disabled'; Stop-Service -Name $x.Name -Force -ErrorAction SilentlyContinue } catch { }
+           }
+           if ($saved.Count -eq 0) { throw 'None of these services exist on this PC.' }
+           return @{ Saved = $saved }
+       }
+       Undo = {
+           param($D)
+           foreach ($s in @($D.Saved)) { if ($s -and $s.Exists) { try { Set-SvcStart -Name $s.Name -Mode $s.Mode -Delayed ([bool]$s.Delayed); if ($s.WasRunning) { Start-Service -Name $s.Name -ErrorAction SilentlyContinue } } catch { } } }
+       }
+       Test = { return $script:State.ContainsKey('trim-services') } },
+
+    @{ Id = 'trim-tasks'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Trim background services and startup'; Name = 'Disable a curated list of background scheduled tasks'; Risk = 'Low'; Recommended = $false
+       Desc = 'Disables well-known low-value background tasks: compatibility and CEIP data collection, disk diagnostics data collection, and Windows Feedback prompts. These only report data to Microsoft; nothing you use daily depends on them. Undo turns each task back on.'
+       Apply = {
+           $touched = Disable-ScheduledTaskList $script:CleanupScheduledTasks
+           if ($touched.Count -eq 0) { throw 'These tasks were already disabled or not found.' }
+           return @{ Tasks = $touched }
+       }
+       Undo = { param($D) Enable-ScheduledTaskList @($D.Tasks) }
+       Test = { return $script:State.ContainsKey('trim-tasks') } },
+
+    @{ Id = 'store-off'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Optional apps and services'; Name = 'Disable Microsoft Store'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Blocks the Microsoft Store app from opening. Any app already installed from the Store keeps working; you just cannot install or update Store apps until you undo this.'
+       Registry = @( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore' 'RemoveWindowsStore' 'DWord' 1) ) },
+
+    @{ Id = 'printer-off'; Category = 'debloat'; Group = 'Optional apps and services'; Name = 'Disable the Print Spooler service'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Turns off printing entirely on this PC. Only apply this if you never print. Undo restores the service to Automatic and starts it again.'
+       Services = @( @{ Name = 'Spooler'; Mode = 'Disabled' } ) },
+
+    @{ Id = 'remove-optional-apps'; IsLaptopSafe = $true; Category = 'debloat'; Group = 'Optional apps and services'; Name = 'Remove optional pre-installed apps'; Risk = 'Medium'; Recommended = $false; OneShot = $true
+       Desc = 'Uninstalls the Xbox apps, 3D Viewer, Mixed Reality Portal, Bing Weather/News, Solitaire, Zune Music/Video, People, Phone Link, Get Help, Get Started, Family Safety, Feedback Hub, the Office hub tile, Clipchamp and Teams (consumer). Calculator, Photos, Notepad, Snipping Tool, the Store and security apps are never touched. This only removes them for your account and cannot be undone from here, but Store apps can always be reinstalled later from the Microsoft Store.'
+       Apply = {
+           $removed = @()
+           foreach ($name in $script:OptionalAppPackages) {
+               $pkgs = @(Get-AppxPackage -Name $name -ErrorAction SilentlyContinue)
+               foreach ($p in $pkgs) {
+                   try { Remove-AppxPackage -Package $p.PackageFullName -ErrorAction Stop; $removed += $p.Name } catch { }
+               }
+           }
+           if ($removed.Count -eq 0) { Write-Log 'None of the optional apps on the list were installed.' }
+           else { Write-Log ('Removed: ' + ($removed | Select-Object -Unique -join ', ')) 'Ok' }
+       } },
+
+    # ============================ NEW: STORAGE TWEAKS TAB ============================
+    @{ Id = 'fsutil-8dot3'; IsLaptopSafe = $true; Category = 'storage'; Group = 'NTFS (fsutil)'; Name = 'Disable 8.3 short filename creation'; Risk = 'Low'; Recommended = $true
+       Desc = 'Stops NTFS creating an old-style 8-character short name (like RUNGAM~1.EXE) for every file, which very old software needed and almost nothing does today. Slightly faster file creation on folders with many files. Undo restores the previous setting; existing short names are not removed by either direction.'
+       Apply = {
+           $prev = (& fsutil.exe 8dot3name query $env:SystemDrive 2>&1 | Out-String)
+           $prevVal = 0
+           $m = [regex]::Match($prev, '(?i)are (disabled|enabled)')
+           if ($m.Success -and $m.Groups[1].Value -ieq 'enabled') { $prevVal = 0 } else { $prevVal = 1 }
+           & fsutil.exe 8dot3name set 1 | Out-Null
+           if ($LASTEXITCODE -ne 0) { throw 'fsutil could not change the 8.3 name setting.' }
+           return @{ Prev = $prevVal }
+       }
+       Undo = { param($D) & fsutil.exe 8dot3name set ([int]$D.Prev) | Out-Null }
+       Test = {
+           $out = (& fsutil.exe 8dot3name query $env:SystemDrive 2>&1 | Out-String)
+           return [bool]($out -match '(?i)disabled')
+       } },
+
+    @{ Id = 'fsutil-memusage'; IsLaptopSafe = $true; Category = 'storage'; Group = 'NTFS (fsutil)'; Name = 'Raise NTFS metadata memory usage (fsutil memoryusage 2)'; Risk = 'Low'; Recommended = $false
+       Desc = 'Runs fsutil behavior set memoryusage 2, which lets NTFS keep more file-system metadata (like the master file table) cached in memory. Helps most with folders containing very large numbers of files. Safe on any PC with a reasonable amount of RAM. Needs a restart.'
+       Restart = 'restart'
+       Apply = {
+           $prev = (& fsutil.exe behavior query memoryusage 2>&1 | Out-String)
+           $prevVal = 1
+           $m = [regex]::Match($prev, '(\d+)')
+           if ($m.Success) { $prevVal = [int]$m.Groups[1].Value }
+           & fsutil.exe behavior set memoryusage 2 | Out-Null
+           if ($LASTEXITCODE -ne 0) { throw 'fsutil could not change the memory usage setting.' }
+           return @{ Prev = $prevVal }
+       }
+       Undo = { param($D) & fsutil.exe behavior set memoryusage ([int]$D.Prev) | Out-Null }
+       Test = {
+           $out = (& fsutil.exe behavior query memoryusage 2>&1 | Out-String)
+           return [bool]($out -match '2')
+       } },
+
+    @{ Id = 'optimize-drives'; IsLaptopSafe = $true; Category = 'storage'; Group = 'Drive optimization'; Name = 'Optimize all drives (defrag HDDs, retrim SSDs)'; Risk = 'Low'; Recommended = $false; OneShot = $true
+       Desc = 'Runs the same engine as the built-in Optimize Drives tool on every fixed drive: a full defragmentation pass on hard drives, and a TRIM pass on SSDs (never a defrag, which would just wear out an SSD for no benefit). Can take a while on a large or very fragmented hard drive.'
+       Apply = {
+           $vols = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter })
+           if ($vols.Count -eq 0) { throw 'No fixed drives were found.' }
+           foreach ($v in $vols) {
+               $letter = [string]$v.DriveLetter
+               try {
+                   $isSsd = $false
+                   try { $isSsd = [bool]((Get-PhysicalDisk -ErrorAction Stop | Where-Object { ($_ | Get-Disk -ErrorAction SilentlyContinue) }).MediaType -contains 'SSD') } catch { }
+                   $part = Get-Partition -DriveLetter $letter -ErrorAction Stop
+                   $disk = Get-PhysicalDisk -ErrorAction Stop | Where-Object { $_.DeviceId -eq $part.DiskNumber }
+                   $ssd = [bool]($disk -and $disk[0].MediaType -eq 'SSD')
+                   if ($ssd) { Write-Log ($letter + ': running TRIM (retrim)'); Optimize-Volume -DriveLetter $letter -ReTrim -ErrorAction Stop }
+                   else { Write-Log ($letter + ': running defragmentation'); Optimize-Volume -DriveLetter $letter -Defrag -ErrorAction Stop }
+                   Update-UI
+                   Write-Log ($letter + ' finished') 'Ok'
+               } catch { Write-Log ($letter + ': ' + $_.Exception.Message) 'Warn' }
+           }
+       } },
+
+    # ============================ NEW: NETWORK ============================
+    @{ Id = 'afd-tweak'; IsLaptopSafe = $true; Category = 'net'; Group = 'Network stack'; Name = 'AFD.sys buffer tweak (DefaultReceiveWindow / DefaultSendWindow)'; Risk = 'Low'; Recommended = $false
+       Desc = 'Raises the default send and receive buffer sizes for the Ancillary Function Driver (AFD.sys), the low-level driver every Windows socket connection runs through. A common gaming-guide tweak; on a modern broadband connection the effect is usually small. Needs a restart.'
+       Restart = 'restart'
+       Registry = @(
+           (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\AFD\Parameters' 'DefaultReceiveWindow' 'DWord' 64240),
+           (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\AFD\Parameters' 'DefaultSendWindow' 'DWord' 64240)
+       ) },
+
+    @{ Id = 'dns-smart-off'; IsLaptopSafe = $true; Category = 'net'; Group = 'Network stack'; Name = 'Turn off smart multi-homed name resolution'; Risk = 'Low'; Recommended = $false
+       Desc = 'Stops Windows from racing a DNS lookup across every network adapter at once and using whichever answers first. On a PC with one active connection (which is most gaming PCs) this does nothing; on a PC with several adapters it can make DNS lookups very slightly more predictable.'
+       Registry = @( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'DisableSmartNameResolution' 'DWord' 1) ) },
+
+    @{ Id = 'qos-unbind'; IsLaptopSafe = $true; Category = 'net'; Group = 'Network stack'; Name = 'Unbind QoS Packet Scheduler from your network adapter'; Risk = 'Low'; Recommended = $false
+       Desc = 'Removes the QoS Packet Scheduler binding from your active network adapter. This is a Windows component, not your router or ISP, and unbinding it is a common (if debated) gaming tweak. Undo re-binds it.'
+       Apply = {
+           $ad = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })
+           if ($ad.Count -eq 0) { throw 'No active network adapter was found.' }
+           $touched = @()
+           foreach ($a in $ad) {
+               $b = Get-NetAdapterBinding -Name $a.Name -ComponentID 'ms_pacer' -ErrorAction SilentlyContinue
+               if ($b -and $b.Enabled) { Disable-NetAdapterBinding -Name $a.Name -ComponentID 'ms_pacer' -ErrorAction SilentlyContinue; $touched += $a.Name }
+           }
+           if ($touched.Count -eq 0) { throw 'QoS Packet Scheduler was already off, or not present, on your adapters.' }
+           return @{ Adapters = $touched }
+       }
+       Undo = { param($D) foreach ($n in @($D.Adapters)) { Enable-NetAdapterBinding -Name $n -ComponentID 'ms_pacer' -ErrorAction SilentlyContinue } }
+       Test = {
+           $any = $false
+           foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+               $b = Get-NetAdapterBinding -Name $a.Name -ComponentID 'ms_pacer' -ErrorAction SilentlyContinue
+               if (-not $b) { continue }
+               $any = $true
+               if ($b.Enabled) { return $false }
+           }
+           return $any
+       } },
+
+    @{ Id = 'icmp-off'; IsLaptopSafe = $true; Category = 'net'; Group = 'Network stack'; Name = 'Turn off ICMP echo replies (block ping)'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Stops this PC from replying to ping (ICMP Echo). A small security-through-obscurity gain, at the cost that ping-based tools, and some game or NAT diagnostics that rely on ICMP, stop working. Undo re-enables the built-in firewall rules.'
+       Apply = {
+           & netsh.exe advfirewall firewall set rule name="File and Printer Sharing (Echo Request - ICMPv4-In)" new enable=no | Out-Null
+           & netsh.exe advfirewall firewall set rule name="File and Printer Sharing (Echo Request - ICMPv6-In)" new enable=no | Out-Null
+       }
+       Undo = {
+           & netsh.exe advfirewall firewall set rule name="File and Printer Sharing (Echo Request - ICMPv4-In)" new enable=yes | Out-Null
+           & netsh.exe advfirewall firewall set rule name="File and Printer Sharing (Echo Request - ICMPv6-In)" new enable=yes | Out-Null
+       }
+       Test = {
+           $out = (& netsh.exe advfirewall firewall show rule name="File and Printer Sharing (Echo Request - ICMPv4-In)" 2>&1 | Out-String)
+           return [bool]($out -match '(?im)^Enabled:\s*No')
+       } },
+
+    @{ Id = 'irq8-priority'; IsLaptopSafe = $true; Category = 'net'; Group = 'Priority'; Name = 'IRQ8 (system clock) priority tweak'; Risk = 'Low'; Recommended = $false
+       Desc = 'An old registry tweak (IRQ8Priority) that raises the priority Windows gives the real-time clock interrupt. Common in older tweak guides; on current Windows builds and hardware the measurable effect is close to none, but it is harmless and fully reversible.'
+       Restart = 'restart'
+       Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'IRQ8Priority' 'DWord' 1) ) },
+
+    # ============================ NEW: NVIDIA ============================
+    @{ Id = 'nv-powermizer'; Category = 'vendor'; Group = 'NVIDIA registry tweaks'; Name = 'Force PowerMizer to prefer maximum performance'; Risk = 'Medium'; Recommended = $false
+       Guard = { Test-HasGpuVendor 'NVIDIA' }
+       Desc = 'Sets your NVIDIA driver'"'"'s PowerMizer to Prefer Maximum Performance at the driver level, the same effect as the NVIDIA Control Panel setting further down this page, but applied directly. Stops the GPU clocking down between frames. On a laptop this uses noticeably more power and heat, so it is not recommended there. A restore point is made first; undo restores the previous values.'
+       Restart = 'restart'
+       Apply = {
+           $gpus = @(Get-GpuList | Where-Object { $_.Name -match 'NVIDIA|GeForce' })
+           if ($gpus.Count -eq 0) { throw 'No NVIDIA graphics card was found.' }
+           $base = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+           $saved = @()
+           $n = 0
+           foreach ($sub in @(Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue)) {
+               $p = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+               if (-not $p -or [string]$p.DriverDesc -notmatch 'NVIDIA|GeForce') { continue }
+               $key = $sub.PSPath
+               foreach ($name in @('PowerMizerEnable', 'PowerMizerLevel', 'PowerMizerLevelAC')) {
+                   $saved += (Get-RegSnapshot $key $name)
+                   Set-RegValue -Path $key -Name $name -Type 'DWord' -Value 1
+               }
+               $n++
+           }
+           if ($n -eq 0) { throw 'Could not find the NVIDIA driver'"'"'s registry entry to change.' }
+           return @{ Saved = $saved }
+       }
+       Undo = { param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
+       Test = {
+           $base = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+           $any = $false
+           foreach ($sub in @(Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue)) {
+               $p = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+               if (-not $p -or [string]$p.DriverDesc -notmatch 'NVIDIA|GeForce') { continue }
+               $any = $true
+               $c = Get-RegSnapshot $sub.PSPath 'PowerMizerLevelAC'
+               if (-not $c.Existed -or [int]$c.Value -ne 1) { return $false }
+           }
+           return $any
+       } },
+
+    # ============================ NEW: DISC ERROR TAB ============================
+    @{ Id = 'diag-sfc'; IsLaptopSafe = $true; Category = 'diskerror'; Group = 'Repair commands'; Name = 'SFC /scannow'; Risk = 'Low'; Recommended = $false; OneShot = $true
+       Desc = 'Repairs protected Windows system files. Can take 10 to 20 minutes. The result appears in the log below when it finishes.'
+       Apply = { Invoke-DiagCommand 'SFC /scannow' 'sfc.exe' @('/scannow') } },
+
+    @{ Id = 'diag-dism-check'; IsLaptopSafe = $true; Category = 'diskerror'; Group = 'Repair commands'; Name = 'DISM CheckHealth'; Risk = 'Low'; Recommended = $false; OneShot = $true
+       Desc = 'A quick check for corruption in the Windows component store. Takes a few seconds.'
+       Apply = { Invoke-DiagCommand 'DISM CheckHealth' 'dism.exe' @('/Online', '/Cleanup-Image', '/CheckHealth') } },
+
+    @{ Id = 'diag-dism-scan'; IsLaptopSafe = $true; Category = 'diskerror'; Group = 'Repair commands'; Name = 'DISM ScanHealth'; Risk = 'Low'; Recommended = $false; OneShot = $true
+       Desc = 'A deeper scan of the Windows component store for corruption. Takes several minutes.'
+       Apply = { Invoke-DiagCommand 'DISM ScanHealth' 'dism.exe' @('/Online', '/Cleanup-Image', '/ScanHealth') } },
+
+    @{ Id = 'diag-dism-restore'; IsLaptopSafe = $true; Category = 'diskerror'; Group = 'Repair commands'; Name = 'DISM RestoreHealth'; Risk = 'Low'; Recommended = $false; OneShot = $true
+       Desc = 'Repairs the Windows component store, downloading replacement files from Windows Update if needed. Needs an internet connection and can take a while.'
+       Apply = { Invoke-DiagCommand 'DISM RestoreHealth' 'dism.exe' @('/Online', '/Cleanup-Image', '/RestoreHealth') } },
+
+    @{ Id = 'diag-chkdsk-scan'; IsLaptopSafe = $true; Category = 'diskerror'; Group = 'Repair commands'; Name = 'CHKDSK /scan (system drive)'; Risk = 'Low'; Recommended = $false; OneShot = $true
+       Desc = 'Checks the file system on your system drive for errors while Windows keeps running (an online scan). Does not fix anything by itself.'
+       Apply = { Invoke-DiagCommand 'CHKDSK /scan' 'chkdsk.exe' @($env:SystemDrive, '/scan') } },
+
+    @{ Id = 'diag-chkdsk-fix'; IsLaptopSafe = $true; Category = 'diskerror'; Group = 'Repair commands'; Name = 'CHKDSK /f (system drive)'; Risk = 'Medium'; Recommended = $false; OneShot = $true
+       Desc = 'Fixes file-system errors on your system drive. Windows cannot lock its own boot drive while running, so this schedules the check for your next restart; you will need to restart the PC yourself afterwards.'
+       Apply = {
+           $out = (& chkdsk.exe $env:SystemDrive /f 2>&1 | Out-String)
+           foreach ($line in ($out -split "`r?`n")) { if ($line.Trim()) { Write-Log $line } }
+           Write-Log 'If Windows scheduled the check, restart your PC to let it run before Windows loads.' 'Warn'
+       } },
+
+    @{ Id = 'diag-component-cleanup'; IsLaptopSafe = $true; Category = 'diskerror'; Group = 'Repair commands'; Name = 'Component Cleanup'; Risk = 'Low'; Recommended = $false; OneShot = $true
+       Desc = 'Removes superseded versions of Windows components that Windows Update leaves behind, freeing disk space. Cannot be undone, but nothing currently in use is removed.'
+       Apply = { Invoke-DiagCommand 'Component Cleanup' 'dism.exe' @('/Online', '/Cleanup-Image', '/StartComponentCleanup') } }
 )
 
 # Hide tweaks that do not apply to this PC (for example Windows 11 only ones on Windows 10).
@@ -1971,11 +2599,126 @@ $script:IconData = @{
     disk    = 'M4,5 H20 V19 H4 Z M8,10 A2,2 0 1 1 8,14 A2,2 0 1 1 8,10 Z M14,10 H18 M14,14 H18'
     info    = 'M12,3 A9,9 0 1 1 12,21 A9,9 0 1 1 12,3 Z M12,11 V16 M12,8 H12.1'
     discord = 'M5,7 Q12,3 19,7 L20,17 Q17,20 14.5,19 L13.5,17.5 H10.5 L9.5,19 Q7,20 4,17 Z M9,11.5 H9.1 M15,11.5 H15.1'
+    windows = 'M3,5.5 L11,4.3 V11.5 H3 Z M12,4.15 L21,3 V11.5 H12 Z M3,12.5 H11 V19.7 L3,18.5 Z M12,12.5 H21 V21 L12,19.85 Z'
+    stackicon = 'M4,7 H20 V17 H4 Z M4,7 L12,3 L20,7 M4,17 L12,21 L20,17 M8,10 H16 M8,14 H16'
 }
 $script:Icons = @{}
 foreach ($k in @($script:IconData.Keys)) {
     try { $script:Icons[$k] = [System.Windows.Media.Geometry]::Parse($script:IconData[$k]) }
     catch { $script:Icons[$k] = [System.Windows.Media.Geometry]::Empty }
+}
+
+# ----------------------------------------------------------------------------
+# Tweak tags: small emoji shown bottom-left of a tweak's description, each with
+# a tooltip explaining what it means. A tweak can carry several tags at once.
+# ----------------------------------------------------------------------------
+$script:TagDefs = @{
+    perf     = @{ Emoji = '(rocket)'; Tip = 'Performance: improves overall speed and responsiveness.' }
+    systune  = @{ Emoji = '(gear)'; Tip = 'System tuning: adjusts how Windows itself behaves.' }
+    boost    = @{ Emoji = '(chart)'; Tip = 'Performance boost: aims to raise FPS or throughput directly.' }
+    aim      = @{ Emoji = '(target)'; Tip = 'Aim / input: changes how your mouse or keyboard feels in-game.' }
+    systweak = @{ Emoji = '(wrench)'; Tip = 'System tweak: a lower-level change under the hood.' }
+    config   = @{ Emoji = '(screwdriver)'; Tip = 'Configuration: sets up an app or driver option for you.' }
+    latency  = @{ Emoji = '(stopwatch)'; Tip = 'Latency: aims to cut delay between an action and its result.' }
+    cleanup  = @{ Emoji = '(broom)'; Tip = 'Cleanup: removes clutter, bloat or temporary files.' }
+    laptop   = @{ Emoji = '(laptop)'; Tip = 'Laptop-safe: checked as reasonable to use on a laptop.' }
+    qol      = @{ Emoji = '(battery)'; Tip = 'Quality of life: a small everyday convenience.' }
+    disk     = @{ Emoji = '(disk)'; Tip = 'Disk health: scans the system for errors and repairs common issues.' }
+    net      = @{ Emoji = '(globe)'; Tip = 'Network tuning: changes how your PC talks to the internet.' }
+    oc       = @{ Emoji = 'OC'; Tip = 'Overclocking: pushes hardware beyond its stock settings for more performance.'; UseIcon = 'oc' }
+    security = @{ Emoji = '(lock)'; Tip = 'Security trade-off: turns off a protection in exchange for speed.' }
+    nvidia   = @{ Emoji = 'GPU'; Tip = 'NVIDIA-specific tweak.'; UseIcon = 'vendor' }
+    amd      = @{ Emoji = 'GPU'; Tip = 'AMD-specific tweak.'; UseIcon = 'vendor' }
+    ram      = @{ Emoji = 'RAM'; Tip = 'Memory (RAM) tweak.'; UseIcon = 'mem' }
+    oneshot  = @{ Emoji = '(bolt)'; Tip = 'One-time action: cannot be undone from here.' }
+}
+# The literal glyphs (kept out of the table above so the file stays readable; PowerShell 5.1 needs
+# these as real Unicode characters, which [char]::ConvertFromUtf32 builds portably from code points).
+function New-Emoji { param([int[]]$Points) return -join ($Points | ForEach-Object { [char]::ConvertFromUtf32($_) }) }
+$script:TagDefs['perf'].Emoji     = New-Emoji @(0x1F680)          # rocket
+$script:TagDefs['systune'].Emoji  = New-Emoji @(0x2699, 0xFE0F)   # gear
+$script:TagDefs['boost'].Emoji    = New-Emoji @(0x1F4C8)          # chart increasing
+$script:TagDefs['aim'].Emoji      = New-Emoji @(0x1F3AF)          # target
+$script:TagDefs['systweak'].Emoji = New-Emoji @(0x1F6E0, 0xFE0F)  # hammer and wrench
+$script:TagDefs['config'].Emoji   = New-Emoji @(0x1F527)          # wrench
+$script:TagDefs['latency'].Emoji  = New-Emoji @(0x23F1, 0xFE0F)   # stopwatch
+$script:TagDefs['cleanup'].Emoji  = New-Emoji @(0x1F9F9)          # broom
+$script:TagDefs['laptop'].Emoji   = New-Emoji @(0x1F4BB)          # laptop
+$script:TagDefs['qol'].Emoji      = New-Emoji @(0x1F50B)          # battery
+$script:TagDefs['disk'].Emoji     = New-Emoji @(0x1F4BE)          # floppy disk
+$script:TagDefs['net'].Emoji      = New-Emoji @(0x1F310)          # globe
+$script:TagDefs['security'].Emoji = New-Emoji @(0x1F512)          # lock
+$script:TagDefs['oneshot'].Emoji  = New-Emoji @(0x26A1)           # bolt
+
+function Get-AutoTags {
+    # Every tweak gets at least one tag automatically from its tab and traits, on top of
+    # anything it explicitly lists in its own Tags field.
+    param($T)
+    $tags = @()
+    if ($T.Tags) { $tags += @($T.Tags) }
+    switch ($T.Category) {
+        'oc'      { $tags += 'oc' }
+        'gpu'     { $tags += @('perf', 'config') }
+        'cpu'     { $tags += @('systune', 'perf') }
+        'kbm'     { $tags += @('aim', 'config') }
+        'aim'     { $tags += 'aim' }
+        'vendor'  { $tags += 'config' }
+        'debloat' { $tags += 'cleanup' }
+        'net'     { $tags += 'net' }
+        'laptop'  { $tags += 'laptop' }
+        'apps'    { $tags += 'config' }
+        'extra'   { $tags += 'systweak' }
+        'windows' { $tags += 'systweak' }
+        'storage' { $tags += 'disk' }
+        'diskerror' { $tags += 'disk' }
+        default   { $tags += 'systweak' }
+    }
+    $n = $T.Name + ' ' + $T.Group
+    if ($n -match '(?i)latency|timer|responsiv') { $tags += 'latency' }
+    if ($n -match '(?i)priority|boost|throttl|performance|fps|clock') { $tags += 'boost' }
+    if ($n -match '(?i)mem|ram|cache|prefetch') { $tags += 'ram' }
+    if ($n -match '(?i)cleanup|temp|recycle|remove|uninstall|debloat') { $tags += 'cleanup' }
+    if ($n -match '(?i)nvidia') { $tags += 'nvidia' }
+    if ($n -match '(?i)\bamd\b|radeon') { $tags += 'amd' }
+    if ($T.Risk -eq 'High') { $tags += 'security' }
+    if ($T.OneShot) { $tags += 'oneshot' }
+    if ($T.IsLaptopSafe) { $tags += 'laptop' }
+    $seen = @{}
+    $out = @()
+    foreach ($t in $tags) { if ($script:TagDefs.ContainsKey($t) -and -not $seen.ContainsKey($t)) { $seen[$t] = $true; $out += $t } }
+    return $out
+}
+
+function New-TagRow {
+    param($T)
+    $tags = @(Get-AutoTags $T)
+    if ($tags.Count -eq 0) { return $null }
+    $row = New-Object System.Windows.Controls.StackPanel
+    $row.Orientation = 'Horizontal'
+    $row.Margin = [System.Windows.Thickness]::new(0, 8, 0, 0)
+    foreach ($key in $tags) {
+        $def = $script:TagDefs[$key]
+        $chip = New-Object System.Windows.Controls.Border
+        $chip.Width = 24; $chip.Height = 24
+        $chip.CornerRadius = [System.Windows.CornerRadius]::new(7)
+        $chip.Background = New-Brush '#1FFFFFFF'
+        $chip.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+        if ($def.UseIcon) {
+            $ic = New-Icon $def.UseIcon 13 '#FFFFFF'
+            $ic.HorizontalAlignment = 'Center'; $ic.VerticalAlignment = 'Center'
+            $chip.Child = $ic
+        } else {
+            $t = New-Text $def.Emoji 13 700
+            $t.HorizontalAlignment = 'Center'; $t.VerticalAlignment = 'Center'
+            $chip.Child = $t
+        }
+        $tip = New-Object System.Windows.Controls.ToolTip
+        $tip.Content = [string]$def.Tip
+        [System.Windows.Controls.ToolTipService]::SetToolTip($chip, $tip)
+        [System.Windows.Controls.ToolTipService]::SetInitialShowDelay($chip, 150)
+        [void]$row.Children.Add($chip)
+    }
+    return $row
 }
 
 $script:OcSections = @(
@@ -2026,12 +2769,15 @@ $script:TabDefs = @(
     @{ Id = 'kbm';     Label = 'KBM Optimizations';    Icon = 'kbm';     Title = 'Keyboard and mouse';    Desc = 'Input behaviour, USB power saving and polling rate.' },
     @{ Id = 'aim';     Label = 'Aim Optimizations';    Icon = 'aim';     Title = 'Aim Optimizations';     Desc = 'Settings that make your aim steadier and more consistent.' },
     @{ Id = 'vendor';  Label = 'Nvidia & AMD';         Icon = 'vendor';  Title = 'Nvidia and AMD';        Desc = 'Driver and control panel settings that match the graphics card in your PC.' },
-    @{ Id = 'debloat'; Label = 'Debloating';           Icon = 'debloat'; Title = 'Debloating';            Desc = 'Turn off the extras Windows adds that you never asked for.' },
+    @{ Id = 'windows'; Label = 'Windows Tweaks';       Icon = 'windows'; Title = 'Windows Tweaks';        Desc = 'Core Windows behaviour: startup, shutdown, visual effects and system settings.' },
+    @{ Id = 'debloat'; Label = 'Debloating';           Icon = 'debloat'; Title = 'Debloating';            Desc = 'Turn off the extras Windows adds that you never asked for, and trim what runs at startup.' },
     @{ Id = 'net';     Label = 'Network Optimizations'; Icon = 'net';    Title = 'Network Optimizations'; Desc = 'Steadier connections for online games.' },
+    @{ Id = 'storage'; Label = 'Storage Tweaks';        Icon = 'disk';   Title = 'Storage Tweaks';        Desc = 'Filesystem tuning and drive optimization for SSDs and hard drives.' },
     @{ Id = 'laptop';  Label = 'Laptop Optimizations'; Icon = 'laptop';  Title = 'Laptop Optimizations';  Desc = 'Balance speed, heat and battery life on a laptop.' },
     @{ Id = 'apps';    Label = 'App Optimizer';        Icon = 'apps';    Title = 'App Optimizer';         Desc = 'Detects your apps and lets you turn off hardware acceleration and clear their cache.' },
-    @{ Id = 'extra';   Label = 'Extra Tweaks';         Icon = 'extra';   Title = 'Extra Tweaks';          Desc = 'Fortnite settings and commands, registry tweaks, Explorer and everything else.' },
+    @{ Id = 'extra';   Label = 'Extra Tweaks';         Icon = 'extra';   Title = 'Extra Tweaks';          Desc = 'Fortnite launch settings, Explorer tweaks and one-time cleanup.' },
     @{ Id = 'bios';    Label = 'BIOS Optimizations';   Icon = 'bios';    Title = 'BIOS Optimizations';    Desc = 'A checklist of settings worth checking in your BIOS.'; Sections = $script:BiosSections; Note = 'Windows cannot change BIOS settings, so this tab is a checklist. Click a step to mark it done. Exact menu names differ by motherboard.' },
+    @{ Id = 'diskerror'; Label = 'Disc Error';         Icon = 'stackicon'; Title = 'Disc Error';          Desc = 'Built-in Windows repair commands for common file, disk and update problems.' },
     @{ Id = 'discord'; Label = 'Discord';              Icon = 'discord'; Title = 'Discord';               Desc = 'Join the community for updates, help and tweak requests.' }
 )
 
@@ -2327,6 +3073,9 @@ $xaml = @'
                 <Button x:Name="BtnHomeRestore" Style="{StaticResource PrimaryButton}" Content="Create restore point" Margin="0,0,10,0"/>
                 <Button x:Name="BtnHomeBrowse" Style="{StaticResource GhostButton}" Content="Browse tweaks"/>
               </StackPanel>
+              <Border Margin="0,16,0,0" Padding="16,12,16,12" CornerRadius="14" Background="#33000000" BorderBrush="#55FFFFFF" BorderThickness="1" HorizontalAlignment="Left" MaxWidth="720">
+                <TextBlock TextWrapping="Wrap" FontSize="12.5" FontWeight="SemiBold" Foreground="#D9FFFFFF" Text="Make a restore point before changing anything, even if a tweak looks small. Results may vary based on your own hardware, drivers and Windows version, so watch the status column and undo anything that does not help."/>
+              </Border>
 
               <Grid Margin="0,24,0,0">
                 <Grid.ColumnDefinitions>
@@ -2485,7 +3234,7 @@ $xaml = @'
               </Grid>
 
               <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
-                <Border CornerRadius="99" Background="{StaticResource Glass}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="14,8">
+                <Border CornerRadius="10" Background="{StaticResource Glass}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="14,8">
                   <TextBlock x:Name="ChipApplied" Text="0 tweaks applied" FontSize="13" FontWeight="Bold"/>
                 </Border>
               </StackPanel>
@@ -2750,6 +3499,8 @@ function New-TweakRow {
     [void]$left.Children.Add($desc)
     if ($T.Restart -eq 'restart') { $rn = New-Text 'Needs a restart.' 12 700 '#8FFFFFFF'; $rn.Margin = [System.Windows.Thickness]::new(0, 4, 0, 0); [void]$left.Children.Add($rn) }
     if ($T.Restart -eq 'sign-out') { $rn = New-Text 'Fully applies after you sign out and back in.' 12 700 '#8FFFFFFF'; $rn.Margin = [System.Windows.Thickness]::new(0, 4, 0, 0); [void]$left.Children.Add($rn) }
+    $tagRow = New-TagRow $T
+    if ($tagRow) { [void]$left.Children.Add($tagRow) }
     if ($T.Picker) {
         $pk = $T.Picker
         $pvals = $script:PickerValues
@@ -2789,7 +3540,7 @@ function New-TweakRow {
     [void]$grid.Children.Add($left)
 
     $pill = New-Object System.Windows.Controls.Border
-    $pill.CornerRadius = [System.Windows.CornerRadius]::new(99)
+    $pill.CornerRadius = [System.Windows.CornerRadius]::new(10)
     $pill.Padding = [System.Windows.Thickness]::new(12, 5, 12, 5)
     $pill.Margin = [System.Windows.Thickness]::new(0, 0, 16, 0)
     $pill.VerticalAlignment = 'Center'
@@ -2851,11 +3602,11 @@ function New-GuideRow {
     [System.Windows.Controls.Grid]::SetColumn($sp, 1)
     [void]$grid.Children.Add($sp)
     $border.Child = $grid
-    $white = New-Brush '#FFFFFF'; $none = New-Brush '#00FFFFFF'; $red = New-Brush '#A10D18'; $ring = New-Brush '#88FFFFFF'; $wt = New-Brush '#FFFFFF'
+    $green = New-Brush '#22C55E'; $none = New-Brush '#00FFFFFF'; $ring = New-Brush '#88FFFFFF'; $wt = New-Brush '#FFFFFF'
     $state = @{ Done = $false }
     $click = {
         $state.Done = -not $state.Done
-        if ($state.Done) { $num.Background = $white; $numText.Foreground = $red; $num.BorderBrush = $white }
+        if ($state.Done) { $num.Background = $green; $numText.Foreground = $wt; $num.BorderBrush = $green }
         else { $num.Background = $none; $numText.Foreground = $wt; $num.BorderBrush = $ring }
     }.GetNewClosure()
     $border.Add_MouseLeftButtonUp($click)
@@ -2946,8 +3697,6 @@ function Get-FnOptions {
         Width = $w; Height = $h; Fps = $fps
         LowGraphics = [bool]$script:Fn.Low.Check.IsChecked
         KeepView    = [bool]$script:Fn.KeepView.Check.IsChecked
-        PerfMode    = [bool]$script:Fn.Perf.Check.IsChecked
-        NoGrass     = [bool]$script:Fn.Grass.Check.IsChecked
         NoReplays   = [bool]$script:Fn.Replay.Check.IsChecked
         NoSleep     = [bool]$script:Fn.Sleep.Check.IsChecked
         Hud75       = [bool]$script:Fn.Hud.Check.IsChecked
@@ -3032,7 +3781,7 @@ function New-FortniteCard {
     $sp = New-Object System.Windows.Controls.StackPanel
     $card.Child = $sp
 
-    [void]$sp.Children.Add((New-Text 'GameUserSettings.ini for max FPS' 17 800))
+    [void]$sp.Children.Add((New-Text 'The Best Game Performance Settings' 17 800))
     $d = New-Text 'Edits only the keys below inside your existing Fortnite settings file, makes a backup first, and shows you exactly what changes before anything is written. Close Fortnite before applying.' 13 600 '#C7FFFFFF' $true
     $d.Margin = [System.Windows.Thickness]::new(0, 4, 0, 14)
     [void]$sp.Children.Add($d)
@@ -3042,13 +3791,11 @@ function New-FortniteCard {
 
     $script:Fn.Low      = New-OptionRow 'Lowest graphics, everything off' 'Sets every quality group to Low and turns VSync and motion blur off. 3D resolution stays at 100 percent so the picture is not blurry.' $true
     $script:Fn.KeepView = New-OptionRow 'Keep view distance high' 'Recommended for competitive play: low view distance can hide enemies who are far away.' $false
-    $script:Fn.Perf     = New-OptionRow 'Performance Mode settings' 'Feature level ES3.1 and lowest mesh quality, matching the launch command -d3d11.' $true
-    $script:Fn.Grass    = New-OptionRow 'No grass' 'Uses the hidden bShowGrass key. Tournament rules may restrict removing visuals, so use it in casual play unless you have checked the rules.' $true
     $script:Fn.Replay   = New-OptionRow 'Replays off' 'Turns off replay recording if a replay setting exists in your file.' $true
     $script:Fn.Sleep    = New-OptionRow 'Sleep timer: never and off' 'Turns off the sleep timer if one exists in your file.' $true
-    $script:Fn.Hud      = New-OptionRow 'HUD scale 75 percent' 'Makes the on-screen interface smaller.' $true
-    $script:Fn.Lobby    = New-OptionRow 'Lobby FPS cap 240' 'Caps the menu and lobby at 240 FPS (the hidden FrontendFrameRateLimit setting) so the lobby does not run your GPU flat out.' $true
-    foreach ($k in @('Low', 'KeepView', 'Perf', 'Grass', 'Replay', 'Sleep', 'Hud', 'Lobby')) { [void]$sp.Children.Add($script:Fn[$k].Panel) }
+    $script:Fn.Hud      = New-OptionRow 'HUD scale 69 percent' 'Makes the on-screen interface smaller.' $true
+    $script:Fn.Lobby    = New-OptionRow 'Lobby FPS cap 120' 'Caps the menu and lobby at 120 FPS (the hidden FrontendFrameRateLimit setting); the lobby does not need as high a limit as a match does.' $true
+    foreach ($k in @('Low', 'KeepView', 'Replay', 'Sleep', 'Hud', 'Lobby')) { [void]$sp.Children.Add($script:Fn[$k].Panel) }
 
     $btns = New-Object System.Windows.Controls.StackPanel
     $btns.Orientation = 'Horizontal'
@@ -3210,18 +3957,74 @@ function New-DiscordCard {
     return $card
 }
 
+function New-LaptopLinkRow {
+    param($T, [bool]$IsLast)
+    $tabLabel = 'its own tab'
+    foreach ($td in $script:TabDefs) { if ($td.Id -eq $T.Category) { $tabLabel = $td.Label; break } }
+    $border = New-Object System.Windows.Controls.Border
+    $border.Padding = [System.Windows.Thickness]::new(20, 15, 20, 15)
+    $border.BorderBrush = New-Brush '#26FFFFFF'
+    if ($IsLast) { $border.BorderThickness = [System.Windows.Thickness]::new(0) } else { $border.BorderThickness = [System.Windows.Thickness]::new(0, 0, 0, 1) }
+    $grid = New-Object System.Windows.Controls.Grid
+    $c1 = New-Object System.Windows.Controls.ColumnDefinition; $c1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    $c2 = New-Object System.Windows.Controls.ColumnDefinition; $c2.Width = [System.Windows.GridLength]::Auto
+    [void]$grid.ColumnDefinitions.Add($c1); [void]$grid.ColumnDefinitions.Add($c2)
+    $left = New-Object System.Windows.Controls.StackPanel
+    $left.Margin = [System.Windows.Thickness]::new(0, 0, 18, 0)
+    [void]$left.Children.Add((New-Text $T.Name 15 800 '#FFFFFF' $true))
+    $d = New-Text $T.Desc 12.5 600 '#C7FFFFFF' $true
+    $d.Margin = [System.Windows.Thickness]::new(0, 3, 0, 0)
+    $d.MaxWidth = 620
+    [void]$left.Children.Add($d)
+    $tagRow = New-TagRow $T
+    if ($tagRow) { [void]$left.Children.Add($tagRow) }
+    [void]$grid.Children.Add($left)
+    $btn = New-Object System.Windows.Controls.Button
+    $btn.Style = $script:Window.FindResource('GhostButton')
+    $btn.Content = ('Open in ' + $tabLabel)
+    $btn.VerticalAlignment = 'Center'
+    $btn.Padding = [System.Windows.Thickness]::new(14, 7, 14, 7)
+    $cat = [string]$T.Category
+    $btn.Add_Click({ Show-Page $cat }.GetNewClosure())
+    [System.Windows.Controls.Grid]::SetColumn($btn, 1)
+    [void]$grid.Children.Add($btn)
+    $border.Child = $grid
+    return $border
+}
+
 function New-TabPage {
     param($Tab)
     $shell = New-PageShell
     $stack = $shell.Stack
     [void]$stack.Children.Add((New-PageHeader $Tab))
-    $tweaks = @($script:Tweaks | Where-Object { $_.Category -eq $Tab.Id })
-    $script:TabHasRows[$Tab.Id] = ($tweaks.Count -gt 0)
 
     if ($Tab.Id -eq 'discord') {
         [void]$stack.Children.Add((New-DiscordCard))
+        $script:TabHasRows[$Tab.Id] = $false
         return $shell.Scroll
     }
+
+    if ($Tab.Id -eq 'laptop') {
+        $script:TabHasRows[$Tab.Id] = $false
+        $safe = @($script:Tweaks | Where-Object { $_.IsLaptopSafe -eq $true })
+        [void]$stack.Children.Add((New-NoteBox 'These tweaks are safe to use on a laptop, based on public guidance and the fact that they do not meaningfully affect battery life or heat. Each one lives on its own tab; use the button to jump there and apply it, so nothing is applied twice from two places.'))
+        if ($safe.Count -gt 0) {
+            $groups = @($safe | ForEach-Object { $_.Category } | Select-Object -Unique)
+            foreach ($catId in $groups) {
+                $label = $catId
+                foreach ($td in $script:TabDefs) { if ($td.Id -eq $catId) { $label = $td.Label; break } }
+                [void]$stack.Children.Add((New-GroupHeading $label))
+                $card = New-ListCard
+                $rows = @($safe | Where-Object { $_.Category -eq $catId })
+                for ($i = 0; $i -lt $rows.Count; $i++) { [void]$card.Stack.Children.Add((New-LaptopLinkRow $rows[$i] ($i -eq $rows.Count - 1))) }
+                [void]$stack.Children.Add($card.Card)
+            }
+        }
+        return $shell.Scroll
+    }
+
+    $tweaks = @($script:Tweaks | Where-Object { $_.Category -eq $Tab.Id })
+    $script:TabHasRows[$Tab.Id] = ($tweaks.Count -gt 0)
     if ($Tab.Note) { [void]$stack.Children.Add((New-NoteBox $Tab.Note)) }
 
     if ($tweaks.Count -gt 0) {
@@ -3250,9 +4053,6 @@ function New-TabPage {
             $names = @()
             foreach ($g in @(Get-GpuList)) { $names += $g.Name }
             if ($names.Count -gt 0) { $x = 'Detected graphics: ' + ($names -join ', ') } else { $x = 'No graphics card was detected.' }
-        }
-        if ($Tab.Id -eq 'laptop') {
-            if (Get-IsLaptop) { $x = 'This PC is a laptop.' } else { $x = 'This PC is a desktop, so laptop tweaks would not apply here.' }
         }
         [void]$stack.Children.Add((New-EmptyState $Tab $x))
     }
@@ -3767,7 +4567,10 @@ $script:Ui.BtnHomeRestore.Add_Click({
     $ok = New-RestorePoint
     if ($ok) { Show-Toast 'Restore point step finished. See the log for details.' } else { Show-Toast 'Could not create a restore point. See the log.' }
 })
-$script:Ui.BtnHomeBrowse.Add_Click({ Show-Page 'cpu' })
+$script:Ui.BtnHomeBrowse.Add_Click({
+    $choices = @($script:TabDefs | Where-Object { $_.Id -ne 'home' } | ForEach-Object { $_.Id })
+    if ($choices.Count -gt 0) { Show-Page ($choices | Get-Random) }
+})
 $script:Ui.BtnRec.Add_Click({
     foreach ($t in $script:Tweaks) {
         $r = $script:Rows[$t.Id]
