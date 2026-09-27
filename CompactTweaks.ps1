@@ -14,7 +14,7 @@
     Keep this file ASCII-only so Windows PowerShell 5.1 reads it correctly.
 #>
 
-$script:Version = '0.5.0'
+$script:Version = '0.6.0'
 $script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1'
 
 # ----------------------------------------------------------------------------
@@ -149,6 +149,14 @@ namespace CT {
     }
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
     public static int SetDwm(IntPtr hwnd, int attr, int value) { return DwmSetWindowAttribute(hwnd, attr, ref value, 4); }
+
+    [DllImport("ntdll.dll")] static extern int NtSetSystemInformation(int infoClass, ref int info, int length);
+    public static bool PurgeStandbyList() {
+        // SystemMemoryListInformation = 80, MemoryPurgeStandbyList = 4 (matches RAMMap / EmptyStandbyList).
+        int cmd = 4;
+        int status = NtSetSystemInformation(80, ref cmd, 4);
+        return status == 0;
+    }
   }
 }
 '@
@@ -983,7 +991,9 @@ function Get-AppCatalog {
         @{ Id = 'edge'; Name = 'Microsoft Edge'; Kind = 'chromium'; Proc = @('msedge'); Config = (Join-Path $la 'Microsoft\Edge\User Data\Local State')
            Caches = @((Join-Path $la 'Microsoft\Edge\User Data\Default\Cache'), (Join-Path $la 'Microsoft\Edge\User Data\Default\Code Cache'), (Join-Path $la 'Microsoft\Edge\User Data\Default\GPUCache')) },
         @{ Id = 'spotify'; Name = 'Spotify'; Kind = 'spotify'; Proc = @('Spotify'); Config = (Join-Path $ad 'Spotify\prefs')
-           Caches = @((Join-Path $la 'Spotify\Data'), (Join-Path $la 'Spotify\Browser')) }
+           Caches = @((Join-Path $la 'Spotify\Data'), (Join-Path $la 'Spotify\Browser')) },
+        @{ Id = 'vscode'; Name = 'Visual Studio Code'; Kind = 'vscode'; Proc = @('Code'); Config = (Join-Path $ad 'Code\argv.json')
+           Caches = @((Join-Path $la 'Code\Cache'), (Join-Path $la 'Code\CachedData'), (Join-Path $la 'Code\GPUCache')) }
     )
 }
 
@@ -1015,6 +1025,12 @@ function Get-AppHwAccel {
                 foreach ($l in $lines) {
                     if ($l -match '^\s*ui\.hardware_acceleration\s*=\s*(\S+)') { return ($Matches[1] -ne 'false') }
                 }
+                return $true
+            }
+            'vscode' {
+                $text = Get-Content -LiteralPath $Path -Raw
+                $m = [regex]::Match($text, '"disable-hardware-acceleration"\s*:\s*(true|false)')
+                if ($m.Success) { return ($m.Groups[1].Value -ne 'true') }
                 return $true
             }
         }
@@ -1053,6 +1069,18 @@ function Set-AppHwAccel {
             }
             if (-not $done) { $lines.Add('ui.hardware_acceleration=' + $val) }
             Write-TextFile -Path $Path -Text ($lines -join $f.NewLine) -Bom $f.Bom
+        }
+        'vscode' {
+            $f = Read-TextFile $Path
+            $flag = 'false'
+            if (-not $Enabled) { $flag = 'true' }
+            $text = $f.Text
+            if ($text -match '"disable-hardware-acceleration"\s*:\s*(true|false)') {
+                $text = [regex]::Replace($text, '("disable-hardware-acceleration"\s*:\s*)(true|false)', ('${1}' + $flag))
+            } else {
+                $text = [regex]::Replace($text, '\{', ('{' + "`r`n" + '    "disable-hardware-acceleration": ' + $flag + ','), 1)
+            }
+            Write-TextFile -Path $Path -Text $text -Bom $f.Bom
         }
     }
 }
@@ -1093,6 +1121,32 @@ function Get-AppOptimizerTweaks {
         $out += @{ Id = ('app-' + $a.Id + '-cache'); Category = 'apps'; Group = $a.Name; Name = ($a.Name + ': clear cache'); Risk = 'Low'; Recommended = $false; OneShot = $true
                    Desc = 'Deletes the temporary cache files the app rebuilds by itself. It may load a little slower the first time you open it afterwards. Close the app first. This cannot be undone, but nothing personal is deleted.'
                    Apply = $cacheApply }
+    }
+    if ($out.Count -gt 1) {
+        $catalog = @(Get-AppCatalog | Where-Object { Test-Path -LiteralPath $_.Config })
+        $names = ($catalog | ForEach-Object { $_.Name }) -join ', '
+        $bulkApply = {
+            $running = @($catalog | Where-Object { Get-Process -Name $_.Proc -ErrorAction SilentlyContinue })
+            if ($running.Count -gt 0) { throw ('Close these apps first: ' + (($running | ForEach-Object { $_.Name }) -join ', ')) }
+            $done = @()
+            foreach ($app in $catalog) {
+                try { $b = Backup-FileSafe $app.Config; Set-AppHwAccel $app.Kind $app.Config $false; $done += @{ Kind = $app.Kind; Config = $app.Config; Backup = $b; Name = $app.Name } }
+                catch { Write-Log ($app.Name + ': ' + $_.Exception.Message) 'Warn' }
+            }
+            Write-Log ('Hardware acceleration turned off for: ' + (($done | ForEach-Object { $_.Name }) -join ', ')) 'Ok'
+            return @{ Apps = $done }
+        }.GetNewClosure()
+        $bulkUndo = {
+            param($D)
+            foreach ($x in @($D.Apps)) { try { Set-AppHwAccel $x.Kind $x.Config $true } catch { } }
+        }.GetNewClosure()
+        $bulkTest = {
+            foreach ($app in $catalog) { if ((Get-AppHwAccel $app.Kind $app.Config) -ne $false) { return $false } }
+            return $true
+        }.GetNewClosure()
+        $out += @{ Id = 'apps-hw-off-all'; Category = 'apps'; Group = 'All detected apps'; Name = 'Turn off hardware acceleration for every detected app'; Risk = 'Low'; Recommended = $false
+                   Desc = ('Applies the same hardware-acceleration-off change above to every app Compact Tweaks found on this PC in one step: ' + $names + '. Close all of them first. Undo turns it back on for all of them.')
+                   Apply = $bulkApply; Undo = $bulkUndo; Test = $bulkTest }
     }
     return $out
 }
@@ -2462,7 +2516,418 @@ $script:Tweaks = @(
 
     @{ Id = 'diag-component-cleanup'; IsLaptopSafe = $true; Category = 'diskerror'; Group = 'Repair commands'; Name = 'Component Cleanup'; Risk = 'Low'; Recommended = $false; OneShot = $true
        Desc = 'Removes superseded versions of Windows components that Windows Update leaves behind, freeing disk space. Cannot be undone, but nothing currently in use is removed.'
-       Apply = { Invoke-DiagCommand 'Component Cleanup' 'dism.exe' @('/Online', '/Cleanup-Image', '/StartComponentCleanup') } }
+       Apply = { Invoke-DiagCommand 'Component Cleanup' 'dism.exe' @('/Online', '/Cleanup-Image', '/StartComponentCleanup') } },
+    # ============================ NEW v0.6: NETWORK (latency-focused) ============================
+    @{ Id = 'netbios-off'; Category = 'net'; Group = 'Network stack'; Name = 'Disable NetBIOS over TCP/IP'; Risk = 'Low'; Recommended = $false
+       Desc = 'Turns off the old NetBIOS-over-TCP/IP name resolution on your active adapters. Almost nothing modern uses it (DNS replaced it years ago); only very old LAN file-sharing setups need it. Undo restores each adapter to Default (get the setting from DHCP).'
+       Apply = {
+           $touched = @()
+           foreach ($c in @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction Stop)) {
+               $prev = [int]$c.TcpipNetbiosOptions
+               $r = Invoke-CimMethod -InputObject $c -MethodName SetTcpipNetbios -Arguments @{ TcpipNetbiosOptions = 2 }
+               if ($r.ReturnValue -eq 0) { $touched += @{ Index = $c.Index; Prev = $prev } }
+           }
+           if ($touched.Count -eq 0) { throw 'No active network adapter could be changed.' }
+           return @{ Touched = $touched }
+       }
+       Undo = {
+           param($D)
+           foreach ($t in @($D.Touched)) {
+               $c = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter ('Index=' + [int]$t.Index) -ErrorAction SilentlyContinue
+               if ($c) { Invoke-CimMethod -InputObject $c -MethodName SetTcpipNetbios -Arguments @{ TcpipNetbiosOptions = [int]$t.Prev } | Out-Null }
+           }
+       }
+       Test = {
+           $any = $false
+           foreach ($c in @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction SilentlyContinue)) {
+               $any = $true
+               if ([int]$c.TcpipNetbiosOptions -ne 2) { return $false }
+           }
+           return $any
+       } },
+
+    @{ Id = 'tcp-ecn-off'; Category = 'net'; Group = 'TCP stack'; Name = 'Turn off ECN (Explicit Congestion Notification)'; Risk = 'Low'; Recommended = $false
+       Desc = 'Some home routers handle ECN poorly and drop or mishandle marked packets, which shows up as occasional stalls. Turning it off avoids that specific problem; on a router that handles ECN correctly, ECN can actually reduce packet loss under load, so this is a trade-off, not a guaranteed win.'
+       Apply = {
+           $prev = (& netsh.exe int tcp show global | Out-String)
+           $prevVal = 'default'
+           $m = [regex]::Match($prev, '(?im)^ECN Capability\\s*:\\s*(\\S+)')
+           if ($m.Success) { $prevVal = $m.Groups[1].Value }
+           & netsh.exe int tcp set global ecncapability=disabled | Out-Null
+           return @{ Prev = $prevVal }
+       }
+       Undo = { param($D) & netsh.exe int tcp set global ecncapability=([string]$D.Prev) | Out-Null }
+       Test = {
+           $out = (& netsh.exe int tcp show global | Out-String)
+           return [bool]($out -match '(?im)^ECN Capability\\s*:\\s*disabled')
+       } },
+
+    @{ Id = 'tcp-autotuning-normal'; Category = 'net'; Group = 'TCP stack'; Name = 'Reset TCP auto-tuning to Normal'; Risk = 'Low'; Recommended = $true
+       Desc = 'Older tweak guides recommend disabling TCP window auto-tuning, but that advice is now outdated and can hurt throughput on modern connections. This makes sure auto-tuning is set to Normal (the healthy default) in case something set it to Disabled in the past.'
+       Apply = {
+           $prev = 'normal'
+           $out = (& netsh.exe int tcp show global | Out-String)
+           $m = [regex]::Match($out, '(?im)^Receive Window Auto-Tuning Level\\s*:\\s*(\\S+)')
+           if ($m.Success) { $prev = $m.Groups[1].Value }
+           & netsh.exe int tcp set global autotuninglevel=normal | Out-Null
+           return @{ Prev = $prev }
+       }
+       Undo = { param($D) & netsh.exe int tcp set global autotuninglevel=([string]$D.Prev) | Out-Null }
+       Test = {
+           $out = (& netsh.exe int tcp show global | Out-String)
+           return [bool]($out -match '(?im)^Receive Window Auto-Tuning Level\\s*:\\s*normal')
+       } },
+
+    @{ Id = 'tcp-timestamps-off'; Category = 'net'; Group = 'TCP stack'; Name = 'Turn off TCP timestamps'; Risk = 'Low'; Recommended = $false
+       Desc = 'Removes a small timestamp field from TCP packet headers. Saves a handful of bytes per packet; the practical effect on latency or FPS is negligible, included because it is a common request in gaming tweak guides.'
+       Apply = {
+           $prev = 'default'
+           $out = (& netsh.exe int tcp show global | Out-String)
+           $m = [regex]::Match($out, '(?im)^RFC 1323 Timestamps\\s*:\\s*(\\S+)')
+           if ($m.Success) { $prev = $m.Groups[1].Value }
+           & netsh.exe int tcp set global timestamps=disabled | Out-Null
+           return @{ Prev = $prev }
+       }
+       Undo = { param($D) & netsh.exe int tcp set global timestamps=([string]$D.Prev) | Out-Null }
+       Test = {
+           $out = (& netsh.exe int tcp show global | Out-String)
+           return [bool]($out -match '(?im)^RFC 1323 Timestamps\\s*:\\s*disabled')
+       } },
+
+    @{ Id = 'nic-power-off'; Category = 'net'; Group = 'Adapter power and offload'; Name = 'Stop Windows powering down your network adapter'; Risk = 'Low'; Recommended = $true
+       Desc = 'Unticks "Allow the computer to turn off this device to save power" on your active network adapters, the classic fix for random micro-disconnects and ping spikes. Undo turns power management back on.'
+       Apply = {
+           $ad = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })
+           if ($ad.Count -eq 0) { throw 'No active network adapter was found.' }
+           $saved = @()
+           foreach ($a in $ad) {
+               $pm = Get-NetAdapterPowerManagement -Name $a.Name -ErrorAction SilentlyContinue
+               if (-not $pm) { continue }
+               $saved += @{ Name = $a.Name; Prev = [bool]$pm.AllowComputerToTurnOffDevice }
+               try { Set-NetAdapterPowerManagement -Name $a.Name -AllowComputerToTurnOffDevice $false -ErrorAction Stop } catch { }
+           }
+           if ($saved.Count -eq 0) { throw 'Your adapter does not expose a power-management setting to change.' }
+           return @{ Saved = $saved }
+       }
+       Undo = { param($D) foreach ($s in @($D.Saved)) { try { Set-NetAdapterPowerManagement -Name $s.Name -AllowComputerToTurnOffDevice $s.Prev -ErrorAction Stop } catch { } } }
+       Test = {
+           $any = $false
+           foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+               $pm = Get-NetAdapterPowerManagement -Name $a.Name -ErrorAction SilentlyContinue
+               if (-not $pm) { continue }
+               $any = $true
+               if ($pm.AllowComputerToTurnOffDevice) { return $false }
+           }
+           return $any
+       } },
+
+    @{ Id = 'nic-interrupt-mod-off'; Category = 'net'; Group = 'Adapter power and offload'; Name = 'Disable network interrupt moderation'; Risk = 'Low'; Recommended = $false
+       Desc = 'Interrupt moderation batches incoming network interrupts to save CPU. Turning it off makes the adapter interrupt the CPU for every packet, which can lower latency slightly at the cost of more CPU use under heavy traffic. Only changes adapters that expose this setting.'
+       Apply = {
+           $saved = @()
+           foreach ($a in @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })) {
+               foreach ($propName in @('*InterruptModeration', 'Interrupt Moderation')) {
+                   $p = Get-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $propName -ErrorAction SilentlyContinue
+                   if (-not $p) { $p = Get-NetAdapterAdvancedProperty -Name $a.Name -DisplayName $propName -ErrorAction SilentlyContinue }
+                   if ($p) { $saved += @{ Adapter = $a.Name; Keyword = $p.RegistryKeyword; Prev = $p.RegistryValue[0] }; Set-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $p.RegistryKeyword -RegistryValue 0 -ErrorAction SilentlyContinue; break }
+               }
+           }
+           if ($saved.Count -eq 0) { throw 'Your network adapter does not expose an interrupt moderation setting.' }
+           return @{ Saved = $saved }
+       }
+       Undo = { param($D) foreach ($s in @($D.Saved)) { try { Set-NetAdapterAdvancedProperty -Name $s.Adapter -RegistryKeyword $s.Keyword -RegistryValue $s.Prev -ErrorAction Stop } catch { } } }
+       Test = { return $script:State.ContainsKey('nic-interrupt-mod-off') } },
+
+    @{ Id = 'nic-flow-control-off'; Category = 'net'; Group = 'Adapter power and offload'; Name = 'Disable network adapter Flow Control'; Risk = 'Low'; Recommended = $false
+       Desc = 'Turns off Ethernet flow control, which some gaming guides link to steadier ping under load. On a network with a weaker switch or router, turning it off can occasionally cause more dropped packets, so watch for that after applying. Only changes adapters that expose this setting.'
+       Apply = {
+           $saved = @()
+           foreach ($a in @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })) {
+               $p = Get-NetAdapterAdvancedProperty -Name $a.Name -DisplayName 'Flow Control' -ErrorAction SilentlyContinue
+               if ($p) { $saved += @{ Adapter = $a.Name; Keyword = $p.RegistryKeyword; Prev = $p.RegistryValue[0] }; Set-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $p.RegistryKeyword -RegistryValue 0 -ErrorAction SilentlyContinue }
+           }
+           if ($saved.Count -eq 0) { throw 'Your network adapter does not expose a Flow Control setting.' }
+           return @{ Saved = $saved }
+       }
+       Undo = { param($D) foreach ($s in @($D.Saved)) { try { Set-NetAdapterAdvancedProperty -Name $s.Adapter -RegistryKeyword $s.Keyword -RegistryValue $s.Prev -ErrorAction Stop } catch { } } }
+       Test = { return $script:State.ContainsKey('nic-flow-control-off') } },
+
+    @{ Id = 'nic-lso-off'; Category = 'net'; Group = 'Adapter power and offload'; Name = 'Disable Large Send Offload'; Risk = 'Low'; Recommended = $false
+       Desc = 'Large Send Offload lets the network card assemble big outgoing packets itself, which is great for file-transfer throughput but can add a small, occasional delay spike some players notice in-game. Turning it off trades a little large-transfer speed for steadier small-packet timing.'
+       Apply = {
+           $saved = @()
+           foreach ($a in @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })) {
+               foreach ($p in @(Get-NetAdapterAdvancedProperty -Name $a.Name -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '(?i)Large Send Offload' })) {
+                   $saved += @{ Adapter = $a.Name; Keyword = $p.RegistryKeyword; Prev = $p.RegistryValue[0] }
+                   Set-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $p.RegistryKeyword -RegistryValue 0 -ErrorAction SilentlyContinue
+               }
+           }
+           if ($saved.Count -eq 0) { throw 'Your network adapter does not expose a Large Send Offload setting.' }
+           return @{ Saved = $saved }
+       }
+       Undo = { param($D) foreach ($s in @($D.Saved)) { try { Set-NetAdapterAdvancedProperty -Name $s.Adapter -RegistryKeyword $s.Keyword -RegistryValue $s.Prev -ErrorAction Stop } catch { } } }
+       Test = { return $script:State.ContainsKey('nic-lso-off') } },
+
+    @{ Id = 'nic-wol-off'; Category = 'net'; Group = 'Adapter power and offload'; Name = 'Disable Wake-on-LAN'; Risk = 'Low'; Recommended = $false
+       Desc = 'Turns off Wake on Magic Packet and pattern-match wake on your active adapters. Only matters if you do not use remote wake-up; harmless either way for gaming performance, included for completeness.'
+       Apply = {
+           $saved = @()
+           foreach ($a in @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })) {
+               foreach ($p in @(Get-NetAdapterAdvancedProperty -Name $a.Name -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '(?i)Wake on' })) {
+                   $saved += @{ Adapter = $a.Name; Keyword = $p.RegistryKeyword; Prev = $p.RegistryValue[0] }
+                   Set-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $p.RegistryKeyword -RegistryValue 0 -ErrorAction SilentlyContinue
+               }
+           }
+           if ($saved.Count -eq 0) { throw 'Your network adapter does not expose a Wake-on-LAN setting.' }
+           return @{ Saved = $saved }
+       }
+       Undo = { param($D) foreach ($s in @($D.Saved)) { try { Set-NetAdapterAdvancedProperty -Name $s.Adapter -RegistryKeyword $s.Keyword -RegistryValue $s.Prev -ErrorAction Stop } catch { } } }
+       Test = { return $script:State.ContainsKey('nic-wol-off') } },
+
+    # ============================ NEW v0.6: WINDOWS TWEAKS ============================
+    @{ Id = 'cloud-sync-off'; Category = 'windows'; Group = 'Cloud and sync'; Name = 'Turn off Windows settings sync'; Risk = 'Low'; Recommended = $false
+       Desc = 'Stops Windows syncing your settings (theme, passwords, language, and so on) to your Microsoft account across devices. Purely a background service, no effect on FPS, included because you asked for it.'
+       Registry = @( (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\SettingSync' 'DisableSettingSync' 'DWord' 2) ) },
+
+    @{ Id = 'experimentation-lock'; Category = 'windows'; Group = 'System settings'; Name = 'Lock Windows experimentation features off'; Risk = 'Low'; Recommended = $true
+       Desc = 'Blocks Microsoft''s internal "experimentation" system that can silently turn on or off small Windows features for some users to test them. Keeps your Windows behaving the same way every time, which is worth having on a gaming PC.'
+       Registry = @( (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PreviewBuilds' 'AllowExperimentation' 'DWord' 0) ) },
+
+    @{ Id = 'media-tracking-off'; Category = 'windows'; Group = 'Cloud and sync'; Name = 'Turn off Windows Media Player usage tracking'; Risk = 'Low'; Recommended = $false
+       Desc = 'Stops Windows Media Player from tracking what you play and reporting player usage statistics.'
+       Registry = @(
+           (New-RegEntry 'HKCU:\\Software\\Microsoft\\MediaPlayer\\Preferences' 'UsageTracking' 'DWord' 0)
+       ) },
+
+    @{ Id = 'nudge-blocker'; Category = 'windows'; Group = 'Ads and suggestions'; Name = 'Turn off Windows "suggested action" nudges'; Risk = 'Low'; Recommended = $true
+       Desc = 'Turns off the small popup suggestions Windows shows near the clock and in File Explorer (things like "connect a Bluetooth device" or "try this feature"). Uses the same content IDs Windows itself uses for these prompts.'
+       Registry = @(
+           (New-RegEntry $cdm 'SubscribedContent-88000326Enabled' 'DWord' 0),
+           (New-RegEntry $cdm 'SubscribedContent-88000175Enabled' 'DWord' 0)
+       ) },
+
+    @{ Id = 'proximity-off'; Category = 'windows'; Group = 'System settings'; Name = 'Turn off Nearby Sharing (proximity device discovery)'; Risk = 'Low'; Recommended = $false
+       Desc = 'Stops Windows using Bluetooth to discover nearby devices for Nearby Sharing. Saves a small amount of background CPU/radio use; no effect on gaming performance.'
+       Registry = @(
+           (New-RegEntry 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CDP' 'NearShareChannelUserAuthzPolicy' 'DWord' 0),
+           (New-RegEntry 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CDP' 'CdpSessionUserAuthzPolicy' 'DWord' 0)
+       ) },
+
+    @{ Id = 'search-cloud-off'; Category = 'windows'; Group = 'Ads and suggestions'; Name = 'Turn off cloud and OneDrive results in Windows Search'; Risk = 'Low'; Recommended = $true
+       Desc = 'Goes further than the existing web-search tweak: stops Windows Search from including OneDrive and other cloud content in results at all, so search stays fully local and a little faster to respond.'
+       Registry = @(
+           (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Search' 'AllowCloudSearch' 'DWord' 0),
+           (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Search' 'ConnectedSearchUseWeb' 'DWord' 0)
+       ) },
+
+    @{ Id = 'voice-activation-off'; Category = 'windows'; Group = 'System settings'; Name = 'Block apps from activating with voice'; Risk = 'Low'; Recommended = $false
+       Desc = 'Stops apps from being able to wake themselves up using voice activation (for example a voice assistant listening in the background), which is one less background process listening for audio.'
+       Registry = @( (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' 'LetAppsActivateWithVoice' 'DWord' 2) ) },
+
+    @{ Id = 'whql-only'; Category = 'windows'; Group = 'System settings'; Name = 'Only allow WHQL-signed drivers'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Uses the legacy but still-honoured Windows Driver Signing policy to block installing any driver that has not passed Microsoft''s WHQL certification. Most drivers today are already WHQL-signed, so you likely will not notice a difference day to day, but it can get in the way if you ever need a beta or unsigned driver.'
+       Apply = {
+           $path = 'HKLM:\\SOFTWARE\\Microsoft\\Driver Signing'
+           $snap = Get-RegSnapshot $path 'Policy'
+           Set-RegValue -Path $path -Name 'Policy' -Type 'Binary' -Value ([byte[]](2, 0, 0, 0))
+           return @{ Saved = @($snap) }
+       }
+       Undo = { param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
+       Test = {
+           $c = Get-RegSnapshot 'HKLM:\\SOFTWARE\\Microsoft\\Driver Signing' 'Policy'
+           return [bool]($c.Existed -and $c.Value -and $c.Value.Length -gt 0 -and $c.Value[0] -eq 2)
+       } },
+
+    @{ Id = 'windows-update-defer'; Category = 'windows'; Group = 'System settings'; Name = 'Defer Windows feature and quality updates'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Delays new Windows feature updates by up to a year and quality (security) updates by a few days, so a fresh, occasionally buggy update does not land on your PC the moment it ships. This defers updates, it does NOT turn off Windows Update entirely: security patches still arrive, just a little later. I chose the safer, deferred version over fully disabling updates.'
+       Registry = @(
+           (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate' 'DeferFeatureUpdatesPeriodInDays' 'DWord' 180),
+           (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate' 'DeferQualityUpdatesPeriodInDays' 'DWord' 4)
+       ) },
+
+    @{ Id = 'windows-ai-off'; Category = 'windows'; Group = 'System settings'; Name = 'Turn off Windows Copilot and AI data analysis'; Risk = 'Low'; Recommended = $false
+       Desc = 'Blocks Windows Copilot and the newer AI features (like Recall''s screen analysis, on the Windows versions that have it) at the policy level. Frees a bit of background CPU/NPU/RAM these features would otherwise reserve.'
+       Registry = @(
+           (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsCopilot' 'TurnOffWindowsCopilot' 'DWord' 1),
+           (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI' 'DisableAIDataAnalysis' 'DWord' 1)
+       ) },
+
+    @{ Id = 'taskbar-jumplist-off'; Category = 'windows'; Group = 'Visual effects'; Name = 'Stop tracking recently opened files (jump lists)'; Risk = 'Low'; Recommended = $false
+       Desc = 'Stops Windows recording which files and apps you opened recently, used to build taskbar jump lists and the Start menu recent list. A small reduction in background disk activity and a privacy gain; you lose the jump-list shortcuts to recent files.'
+       Registry = @( (New-RegEntry $explorerAdv 'Start_TrackDocs' 'DWord' 0) ) },
+
+    @{ Id = 'alt-tab-classic'; Category = 'windows'; Group = 'Visual effects'; Name = 'Classic Alt+Tab (desktop apps only)'; Risk = 'Low'; Recommended = $false
+       Desc = 'Switches Alt+Tab back to the classic style that only cycles through open desktop app windows, skipping the modern browser-tab thumbnails, which can feel snappier with lots of tabs open.'
+       Restart = 'sign-out'
+       Registry = @( (New-RegEntry $explorerAdv 'AltTabSettings' 'DWord' 1) ) },
+
+    @{ Id = 'explorer-onedrive-nag-off'; Category = 'windows'; Group = 'Visual effects'; Name = 'Turn off OneDrive sync notifications in Explorer'; Risk = 'Low'; Recommended = $false
+       Desc = 'Stops the little OneDrive sync popups and badges inside File Explorer. OneDrive itself keeps syncing; you just stop seeing the notifications about it.'
+       Registry = @( (New-RegEntry $explorerAdv 'ShowSyncProviderNotifications' 'DWord' 0) ) },
+
+    @{ Id = 'audio-ducking-off'; Category = 'windows'; Group = 'Latency'; Name = 'Stop Windows lowering other sounds during calls (audio ducking)'; Risk = 'Low'; Recommended = $false
+       Desc = 'Sets Sound settings, Communications to "Do nothing" so Windows never automatically quietens your game or music when it thinks you are on a call. Purely a convenience setting, not a performance tweak.'
+       Registry = @( (New-RegEntry 'HKCU:\\Software\\Microsoft\\Multimedia\\Audio' 'UserDuckingPreference' 'DWord' 3) ) },
+
+    @{ Id = 'bcdedit-bootux-off'; Category = 'windows'; Group = 'Boot (BCDEdit)'; Name = 'Skip the Windows boot animation'; Risk = 'Low'; Recommended = $false
+       Desc = 'Runs bcdedit /set bootux disabled so Windows skips its spinning-dots boot animation. Shaves a small amount of perceived boot time; does not affect anything once Windows is running. If BitLocker is on, protection is suspended for one restart so this does not trigger a recovery-key prompt.'
+       Restart = 'restart'
+       Apply = {
+           $susp = Suspend-BitLockerForBoot
+           & bcdedit.exe /set '{current}' bootux disabled | Out-Null
+           if ($LASTEXITCODE -ne 0) { throw 'bcdedit could not change the boot animation setting.' }
+           return @{ Suspended = $susp }
+       }
+       Undo = {
+           [void](Suspend-BitLockerForBoot)
+           & bcdedit.exe /set '{current}' bootux standard | Out-Null
+       }
+       Test = {
+           $out = (& bcdedit.exe /enum '{current}' 2>&1 | Out-String)
+           return [bool]($out -match '(?im)^\\s*bootux\\s+disabled')
+       } },
+
+    # ============================ NEW v0.6: CPU ============================
+    @{ Id = 'core-parking-off'; Category = 'cpu'; Group = 'Power'; Name = 'Disable CPU core parking'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Windows "parks" (idles) CPU cores it thinks you do not need to save power, then has to unpark them when load spikes, which takes a moment. This forces all cores to stay unparked and ready on the active power plan. Applies to whichever plan is active, so apply it after choosing your power plan.'
+       Apply = {
+           $scheme = Get-ActiveSchemeGuid
+           if (-not $scheme) { throw 'Could not read the active power plan.' }
+           $out = (& powercfg.exe /q $scheme SUB_PROCESSOR CPMINCORES | Out-String)
+           $prev = 0; $m = [regex]::Match($out, '(?m)Current AC Power Setting Index:\\s*0x([0-9a-fA-F]+)'); if ($m.Success) { $prev = [Convert]::ToInt32($m.Groups[1].Value, 16) }
+           & powercfg.exe /setacvalueindex $scheme SUB_PROCESSOR CPMINCORES 100 | Out-Null
+           & powercfg.exe /setdcvalueindex $scheme SUB_PROCESSOR CPMINCORES 100 | Out-Null
+           & powercfg.exe /setactive $scheme | Out-Null
+           return @{ Scheme = $scheme; Prev = $prev }
+       }
+       Undo = {
+           param($D)
+           & powercfg.exe /setacvalueindex ([string]$D.Scheme) SUB_PROCESSOR CPMINCORES ([string][int]$D.Prev) | Out-Null
+           & powercfg.exe /setdcvalueindex ([string]$D.Scheme) SUB_PROCESSOR CPMINCORES ([string][int]$D.Prev) | Out-Null
+           & powercfg.exe /setactive ([string]$D.Scheme) | Out-Null
+       }
+       Test = {
+           $scheme = Get-ActiveSchemeGuid
+           if (-not $scheme) { return $false }
+           $out = (& powercfg.exe /q $scheme SUB_PROCESSOR CPMINCORES | Out-String)
+           $m = [regex]::Match($out, '(?m)Current AC Power Setting Index:\\s*0x([0-9a-fA-F]+)')
+           return [bool]($m.Success -and [Convert]::ToInt32($m.Groups[1].Value, 16) -eq 100)
+       } },
+
+    @{ Id = 'pcie-aspm-off'; Category = 'cpu'; Group = 'Power'; Name = 'Turn off PCIe Link State Power Management'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Stops PCIe devices (your GPU, NVMe SSD, network card) from dropping into low-power link states between bursts of activity. Some systems see steadier frame times and fewer micro-stutters; on a laptop this raises power use and heat noticeably.'
+       Apply = {
+           $scheme = Get-ActiveSchemeGuid
+           if (-not $scheme) { throw 'Could not read the active power plan.' }
+           & powercfg.exe /setacvalueindex $scheme SUB_PCIEXPRESS ASPM 0 | Out-Null
+           & powercfg.exe /setactive $scheme | Out-Null
+           return @{ Scheme = $scheme }
+       }
+       Undo = {
+           param($D)
+           & powercfg.exe /setacvalueindex ([string]$D.Scheme) SUB_PCIEXPRESS ASPM 1 | Out-Null
+           & powercfg.exe /setactive ([string]$D.Scheme) | Out-Null
+       }
+       Test = {
+           $scheme = Get-ActiveSchemeGuid
+           if (-not $scheme) { return $false }
+           $out = (& powercfg.exe /q $scheme SUB_PCIEXPRESS ASPM | Out-String)
+           $m = [regex]::Match($out, '(?m)Current AC Power Setting Index:\\s*0x([0-9a-fA-F]+)')
+           return [bool]($m.Success -and [Convert]::ToInt32($m.Groups[1].Value, 16) -eq 0)
+       } },
+
+    @{ Id = 'mem-compression-off'; Category = 'cpu'; Group = 'Memory'; Name = 'Turn off Memory Compression'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Windows compresses inactive memory pages instead of paging them to disk, which normally helps low-RAM PCs. With 16 GB or more this compression work is mostly wasted CPU time. Microsoft generally recommends leaving it on; only turn this off if you have plenty of RAM to spare.'
+       Apply = {
+           $prev = (Get-MMAgent).MemoryCompression
+           Disable-MMAgent -MemoryCompression -ErrorAction Stop
+           return @{ Prev = [bool]$prev }
+       }
+       Undo = { param($D) if ($D.Prev) { Enable-MMAgent -MemoryCompression -ErrorAction SilentlyContinue } }
+       Test = { try { return -not (Get-MMAgent).MemoryCompression } catch { return $false } } },
+
+    @{ Id = 'page-combining-off'; Category = 'cpu'; Group = 'Memory'; Name = 'Turn off Page Combining'; Risk = 'Low'; Recommended = $false
+       Desc = 'Windows periodically scans RAM for identical pages across processes and merges them to save memory, which uses a little background CPU. Turning it off trades a bit of RAM efficiency for slightly less background scanning.'
+       Apply = {
+           $prev = (Get-MMAgent).PageCombining
+           Disable-MMAgent -PageCombining -ErrorAction Stop
+           return @{ Prev = [bool]$prev }
+       }
+       Undo = { param($D) if ($D.Prev) { Enable-MMAgent -PageCombining -ErrorAction SilentlyContinue } }
+       Test = { try { return -not (Get-MMAgent).PageCombining } catch { return $false } } },
+
+    @{ Id = 'hpet-off'; Category = 'cpu'; Group = 'Latency and kernel'; Name = 'Force the platform clock off (HPET)'; Risk = 'Medium'; Recommended = $false
+       Desc = 'Tells Windows not to use the High Precision Event Timer as its main clock source. Reported results are genuinely mixed: some motherboards see fewer micro-stutters, others see no change or slightly worse. Test it in your own games and undo if it does not help. BitLocker is suspended for one restart if it is on.'
+       Restart = 'restart'
+       Apply = {
+           $susp = Suspend-BitLockerForBoot
+           $prev = Get-BcdFlag 'useplatformclock'
+           & bcdedit.exe /set '{current}' useplatformclock false | Out-Null
+           if ($LASTEXITCODE -ne 0) { throw 'bcdedit could not change useplatformclock.' }
+           return @{ Prev = $prev; Suspended = $susp }
+       }
+       Undo = {
+           param($D)
+           [void](Suspend-BitLockerForBoot)
+           if ($D.Prev) { & bcdedit.exe /set '{current}' useplatformclock ([string]$D.Prev) | Out-Null }
+           else { & bcdedit.exe /deletevalue '{current}' useplatformclock | Out-Null }
+       }
+       Test = {
+           $f = Get-BcdFlag 'useplatformclock'
+           return [bool]($f -and $f -match '^(?i:false|no)$')
+       } },
+
+    @{ Id = 'standby-cleaner'; Category = 'cpu'; Group = 'Memory'; Name = 'Clear the Standby memory list'; Risk = 'Low'; Recommended = $false; OneShot = $true
+       Desc = 'Uses the same technique as Sysinternals RAMMap and the well-known EmptyStandbyList tool to purge cached-but-unused memory back to Free, which can help right after closing a memory-heavy app. Windows will refill the cache naturally as you keep using the PC; nothing is lost.'
+       Apply = {
+           if (-not $script:NativeOk) { throw 'The native helper is unavailable, so this cannot run.' }
+           $before = [CT.Sys]::Memory()
+           $ok = [CT.Sys]::PurgeStandbyList()
+           if (-not $ok) { throw 'Windows refused the request (it needs to run elevated, which Compact Tweaks already is, so this is unexpected).' }
+           Start-Sleep -Milliseconds 300
+           $after = [CT.Sys]::Memory()
+           if ($before -and $after) {
+               $freed = ([double]$after.AvailPhys - [double]$before.AvailPhys) / 1MB
+               Write-Log ('Standby list cleared, about {0} MB now free' -f [math]::Max(0, [math]::Round($freed))) 'Ok'
+           } else { Write-Log 'Standby list cleared.' 'Ok' }
+       } },
+
+    # ============================ NEW v0.6: NVIDIA ============================
+    @{ Id = 'nv-telemetry-off'; Category = 'vendor'; Group = 'NVIDIA debloat'; Name = 'Disable the NVIDIA Telemetry Container'; Risk = 'Low'; Recommended = $false
+       Guard = { Test-HasGpuVendor 'NVIDIA' }
+       Desc = 'Disables the NvTelemetryContainer service, which reports GeForce Experience usage data back to NVIDIA in the background. Your graphics driver keeps working exactly the same; you only lose that telemetry reporting. Undo restores its original start mode.'
+       Services = @( @{ Name = 'NvTelemetryContainer'; Mode = 'Disabled' } ) },
+
+    @{ Id = 'nv-overlay-off'; Category = 'vendor'; Group = 'NVIDIA debloat'; Name = 'Disable the GeForce Experience overlay service'; Risk = 'Medium'; Recommended = $false
+       Guard = { Test-HasGpuVendor 'NVIDIA' }
+       Desc = 'Disables NVIDIA Container (NvContainerLocalSystem), which runs the ShadowPlay/Instant Replay overlay, in-game recording, and GeForce Experience''s driver-update notifications. Your actual graphics driver and games are unaffected; you lose the overlay, recording and update pop-ups from GeForce Experience specifically. Some players find this also removes an occasional source of overlay-related stutter.'
+       Services = @( @{ Name = 'NvContainerLocalSystem'; Mode = 'Disabled' } ) },
+
+    # ============================ NEW v0.6: DEBLOATING ============================
+    @{ Id = 'chrome-debloat'; Category = 'debloat'; Group = 'Browser debloat'; Name = 'Debloat Chrome (background mode and silent auto-update checks)'; Risk = 'Low'; Recommended = $false
+       Desc = 'Turns off Chrome''s background mode (so it cannot keep running after you close the last window) and disables its two scheduled background update-check tasks. You can still update Chrome manually any time from its own menu; this only stops the silent background checks.'
+       Registry = @( (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Google\\Chrome' 'BackgroundModeEnabled' 'DWord' 0) )
+       Apply = {
+           $touched = Disable-ScheduledTaskList @('\\GoogleUpdateTaskMachineCore', '\\GoogleUpdateTaskMachineUA')
+           return @{ Tasks = $touched }
+       }
+       Undo = { param($D) Enable-ScheduledTaskList @($D.Tasks) } },
+
+    @{ Id = 'trim-force-on'; Category = 'storage'; Group = 'NTFS (fsutil)'; Name = 'Make sure TRIM is enabled'; Risk = 'Low'; Recommended = $true
+       Desc = 'Confirms fsutil behavior set disabledeletenotify is 0, meaning Windows is allowed to send TRIM commands to your SSD so it can reuse deleted space efficiently. This is on by default; this tweak simply forces it back on if something ever turned it off, keeping your SSD healthy and fast long-term.'
+       Apply = {
+           $prev = (& fsutil.exe behavior query disabledeletenotify 2>&1 | Out-String)
+           $prevVal = 0
+           $m = [regex]::Match($prev, '(\\d+)')
+           if ($m.Success) { $prevVal = [int]$m.Groups[1].Value }
+           & fsutil.exe behavior set disabledeletenotify 0 | Out-Null
+           return @{ Prev = $prevVal }
+       }
+       Undo = { param($D) & fsutil.exe behavior set disabledeletenotify ([int]$D.Prev) | Out-Null }
+       Test = {
+           $out = (& fsutil.exe behavior query disabledeletenotify 2>&1 | Out-String)
+           return [bool]($out -match '=\\s*0')
+       } }
 )
 
 # Hide tweaks that do not apply to this PC (for example Windows 11 only ones on Windows 10).
