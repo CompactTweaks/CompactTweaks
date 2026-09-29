@@ -14,7 +14,7 @@
     Keep this file ASCII-only so Windows PowerShell 5.1 reads it correctly.
 #>
 
-$script:Version = '0.9.0'
+$script:Version = '1.0.0'
 $script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1'
 
 # ----------------------------------------------------------------------------
@@ -3391,9 +3391,349 @@ $script:Tweaks = @(
 
 $script:Tweaks = @($script:Tweaks) + @(Get-ExtraPerformanceTweaks)
 
+# ----------------------------------------------------------------------------
+# v1.0 pure performance expansion
+# Adds 61 CPU, game-scheduling, NIC and storage performance controls.
+# They are deliberately not all Recommended: several trade power/heat/features
+# for responsiveness and should be benchmarked on the specific PC.
+# ----------------------------------------------------------------------------
+function Get-NicAdvancedByDisplayPattern {
+    param([string]$Pattern)
+
+    $out = @()
+    if (-not (Get-Command Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue)) { return $out }
+
+    foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+        try {
+            foreach ($p in @(Get-NetAdapterAdvancedProperty -Name $a.Name -AllProperties -ErrorAction Stop)) {
+                if (([string]$p.DisplayName) -match $Pattern) { $out += $p }
+            }
+        } catch { }
+    }
+
+    return @($out)
+}
+
+function Get-NicAdvancedNumericMax {
+    param($Property)
+
+    try {
+        $nums = @()
+        foreach ($v in @($Property.ValidRegistryValues)) {
+            $n = 0
+            if ([int]::TryParse(([string]$v), [ref]$n)) { $nums += $n }
+        }
+
+        if ($nums.Count -gt 0) {
+            return [int](($nums | Measure-Object -Maximum).Maximum)
+        }
+    } catch { }
+
+    return $null
+}
+
+function Get-PurePerformanceTweaksV10 {
+    $out = @()
+
+    # -------------------------- CPU / processor response ---------------------
+    $cpuPower = @(
+        @{ Id='cpu-perfinc-rocket'; Setting='PERFINCPOL'; Value=2; Name='CPU performance increase policy: Rocket'; Risk='Medium';
+           Desc='Uses the Windows Rocket performance-increase policy so supported non-autonomous P-state processors react more aggressively when load rises. This can improve burst response but increases power and heat.' },
+
+        @{ Id='cpu-perfdec-single'; Setting='PERFDECPOL'; Value=1; Name='CPU performance decrease policy: Single'; Risk='Medium';
+           Desc='Uses the Windows Single performance-decrease policy so supported CPUs reduce performance more gradually after load falls. This can reduce rapid frequency bouncing at the cost of more power.' },
+
+        @{ Id='cpu-perfinc-threshold-10'; Setting='PERFINCTHRESHOLD'; Value=10; Name='CPU performance increase threshold: 10%'; Risk='Medium';
+           Desc='Requests a higher CPU performance state once utilization reaches 10% on systems where Windows directly controls performance-state changes.' },
+
+        @{ Id='cpu-perfdec-threshold-8'; Setting='PERFDECTHRESHOLD'; Value=8; Name='CPU performance decrease threshold: 8%'; Risk='Medium';
+           Desc='Uses an 8% performance-decrease threshold on supported non-autonomous CPU performance-state systems, keeping higher performance through short load dips.' },
+
+        @{ Id='cpu-perfinc-time-1'; Setting='PERFINCTIME'; Value=1; Name='CPU performance increase time: Fast'; Risk='Medium';
+           Desc='Sets the minimum delay between CPU performance-state increases to one processor-performance check interval for faster ramp-up on supported systems.' },
+
+        @{ Id='cpu-perfdec-time-100'; Setting='PERFDECTIME'; Value=100; Name='CPU performance decrease time: Slow'; Risk='Medium';
+           Desc='Delays subsequent CPU performance-state reductions to 100 processor-performance check intervals, which can keep clocks up between short bursts of game work.' },
+
+        @{ Id='cpu-latency-hint-perf-100'; Setting='LATENCYHINTPERF'; Value=100; Name='Latency hint CPU performance: 100%'; Risk='Medium';
+           Desc='Requests 100% processor performance while Windows latency-sensitive hints are active. These hints can be generated around certain keyboard, mouse and touch events.' },
+
+        @{ Id='cpu-latency-hint-epp-0-v10'; Setting='LATENCYHINTEPP'; Value=0; Name='Latency hint EPP: Maximum performance'; Risk='Medium';
+           Desc='Uses maximum-performance energy preference during Windows latency-sensitive hints on autonomous CPPC systems.' },
+
+        @{ Id='cpu-autonomous-cppc-on'; Setting='PERFAUTONOMOUS'; Value=1; Name='Enable CPPC autonomous performance control'; Risk='Medium';
+           Desc='Enables autonomous CPPC v2 performance control where the processor/platform supports it. Unsupported systems ignore or hide the setting.' },
+
+        @{ Id='cpu-corepark-max-100'; Setting='CPMAXCORES'; Value=100; Name='Core parking maximum unparked cores: 100%'; Risk='Medium';
+           Desc='Allows up to 100% of logical processors to remain unparked so a lower maximum cannot cap the active core count.' },
+
+        @{ Id='cpu-corepark-inc-time-1'; Setting='CPINCREASETIME'; Value=1; Name='Core parking unpark delay: Fast'; Risk='Medium';
+           Desc='Reduces the minimum wait before Windows may unpark additional logical processors to one processor-performance check interval.' },
+
+        @{ Id='cpu-corepark-dec-time-100'; Setting='CPDECREASETIME'; Value=100; Name='Core parking park delay: Slow'; Risk='Medium';
+           Desc='Makes Windows wait longer before parking additional logical processors after load drops, reducing repeated park/unpark transitions during bursty workloads.' },
+
+        @{ Id='cpu-epp-class1-0'; Setting='PERFEPP1'; Value=0; Name='Hybrid CPU class-1 EPP: Maximum performance'; Risk='Medium';
+           Desc='On supported heterogeneous CPUs, sets the class-1 processor energy-performance preference to maximum performance.' },
+
+        @{ Id='cpu-latency-epp-class1-0'; Setting='LATENCYHINTEPP1'; Value=0; Name='Hybrid CPU class-1 latency EPP: Maximum performance'; Risk='Medium';
+           Desc='On supported heterogeneous CPUs, uses maximum-performance EPP for class-1 cores while a latency-sensitive hint is active.' },
+
+        @{ Id='cpu-latency-perf-class1-100'; Setting='LATENCYHINTPERF1'; Value=100; Name='Hybrid CPU class-1 latency performance: 100%'; Risk='Medium';
+           Desc='On supported heterogeneous CPUs, requests full performance from class-1 cores during latency-sensitive hints.' },
+
+        @{ Id='cpu-corepark-min-class1-100'; Setting='CPMINCORES1'; Value=100; Name='Hybrid CPU class-1 minimum unparked cores: 100%'; Risk='Medium';
+           Desc='On supported heterogeneous CPUs, keeps the minimum unparked percentage for class-1 processors at 100% on AC power.' },
+
+        @{ Id='cpu-corepark-max-class1-100'; Setting='CPMAXCORES1'; Value=100; Name='Hybrid CPU class-1 maximum unparked cores: 100%'; Risk='Medium';
+           Desc='On supported heterogeneous CPUs, allows all class-1 logical processors to remain unparked.' }
+    )
+
+    foreach ($x in $cpuPower) {
+        $setting = [string]$x.Setting
+        $value = [int]$x.Value
+
+        $guard = { Test-PowerCfgSettingAvailable 'SUB_PROCESSOR' $setting }.GetNewClosure()
+        $apply = { Set-ActivePowerCfgAcValue 'SUB_PROCESSOR' $setting $value }.GetNewClosure()
+        $undo  = { param($D) Restore-PowerCfgAcValue $D }.GetNewClosure()
+        $test  = { Test-PowerCfgAcValue 'SUB_PROCESSOR' $setting $value }.GetNewClosure()
+
+        $out += @{
+            Id=$x.Id; Category='cpu'; Group='Advanced processor response'
+            Name=$x.Name; Risk=$x.Risk; Recommended=$false; Desc=$x.Desc
+            Guard=$guard; Apply=$apply; Undo=$undo; Test=$test
+        }
+    }
+
+    # -------------------------- Per-game scheduling --------------------------
+    # Above Normal is used rather than High/Realtime so background audio,
+    # networking and input threads still get CPU time.
+    $games = @(
+        @{ Id='minecraft'; Exe='javaw.exe'; Label='Minecraft / Java games'; Note=' This affects javaw.exe, so other Java desktop applications may inherit it too.' },
+        @{ Id='roblox'; Exe='RobloxPlayerBeta.exe'; Label='Roblox'; Note='' },
+        @{ Id='cs2'; Exe='cs2.exe'; Label='Counter-Strike 2'; Note='' },
+        @{ Id='valorant'; Exe='VALORANT-Win64-Shipping.exe'; Label='VALORANT'; Note='' },
+        @{ Id='apex'; Exe='r5apex.exe'; Label='Apex Legends'; Note='' },
+        @{ Id='overwatch'; Exe='Overwatch.exe'; Label='Overwatch 2'; Note='' },
+        @{ Id='rocketleague'; Exe='RocketLeague.exe'; Label='Rocket League'; Note='' },
+        @{ Id='gta5'; Exe='GTA5.exe'; Label='Grand Theft Auto V'; Note='' },
+        @{ Id='r6'; Exe='RainbowSix.exe'; Label='Rainbow Six Siege'; Note='' },
+        @{ Id='cod'; Exe='cod.exe'; Label='Call of Duty'; Note='' },
+        @{ Id='lol'; Exe='League of Legends.exe'; Label='League of Legends'; Note='' },
+        @{ Id='pubg'; Exe='TslGame.exe'; Label='PUBG'; Note='' },
+        @{ Id='fh5'; Exe='ForzaHorizon5.exe'; Label='Forza Horizon 5'; Note='' },
+        @{ Id='destiny2'; Exe='destiny2.exe'; Label='Destiny 2'; Note='' },
+        @{ Id='fivem'; Exe='FiveM_GTAProcess.exe'; Label='FiveM'; Note='' }
+    )
+
+    foreach ($g in $games) {
+        $perfPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\' + $g.Exe + '\PerfOptions'
+
+        $out += @{
+            Id=('game-' + $g.Id + '-cpu-abovenormal')
+            Category='cpu'; Group='Game process priority'
+            Name=($g.Label + ': Above Normal CPU priority')
+            Risk='Low'; Recommended=$false
+            Desc=('Starts ' + $g.Label + ' at Above Normal CPU priority through Windows IFEO PerfOptions. This does not modify the game files and deliberately avoids High/Realtime priority. Relaunch the game after applying.' + $g.Note)
+            Registry=@((New-RegEntry $perfPath 'CpuPriorityClass' 'DWord' 6))
+        }
+
+        $out += @{
+            Id=('game-' + $g.Id + '-io-high')
+            Category='storage'; Group='Game I/O priority'
+            Name=($g.Label + ': High disk I/O priority')
+            Risk='Low'; Recommended=$false
+            Desc=('Gives ' + $g.Label + ' High Windows I/O priority through IFEO PerfOptions. This can help loading/asset streaming when storage is busy, but it is not a guaranteed FPS increase. Relaunch the game after applying.' + $g.Note)
+            Registry=@((New-RegEntry $perfPath 'IoPriority' 'DWord' 3))
+        }
+    }
+
+    # -------------------------- NIC / network driver -------------------------
+    $nicZero = @(
+        @{ Id='nic-tcp-checksum-v6-off'; Keyword='*TCPChecksumOffloadIPv6'; Name='Disable TCP checksum offload (IPv6)'; Desc='Moves IPv6 TCP checksum work from the NIC to the CPU. Useful only as a latency/driver consistency test; CPU usage may rise.' },
+        @{ Id='nic-udp-checksum-v6-off'; Keyword='*UDPChecksumOffloadIPv6'; Name='Disable UDP checksum offload (IPv6)'; Desc='Moves IPv6 UDP checksum work from the NIC to the CPU. Useful only as a latency/driver consistency test; CPU usage may rise.' },
+        @{ Id='nic-ip-checksum-v4-off'; Keyword='*IPChecksumOffloadIPv4'; Name='Disable IPv4 header checksum offload'; Desc='Disables IPv4 header checksum offload where the NIC exposes it. This is for testing driver/offload latency behavior, not a universal speed boost.' },
+        @{ Id='nic-rsc-v4-off-adv'; Keyword='*RscIPv4'; Name='Disable adapter RSC (IPv4)'; Desc='Disables the NIC advanced-property form of Receive Segment Coalescing for IPv4. RSC saves CPU but can batch packets.' },
+        @{ Id='nic-rsc-v6-off-adv'; Keyword='*RscIPv6'; Name='Disable adapter RSC (IPv6)'; Desc='Disables the NIC advanced-property form of Receive Segment Coalescing for IPv6.' },
+        @{ Id='nic-priority-vlan-off'; Keyword='*PriorityVLANTag'; Name='Disable Priority & VLAN tagging'; Desc='Disables NIC priority/VLAN tagging where exposed. Do not enable this tweak if your network actually uses VLAN tagging or 802.1p priority.' }
+    )
+
+    foreach ($x in $nicZero) {
+        $kw = [string]$x.Keyword
+
+        $guard = { return (@(Get-NicAdvancedByKeyword $kw).Count -gt 0) }.GetNewClosure()
+
+        $apply = {
+            $props = @(Get-NicAdvancedByKeyword $kw)
+            if ($props.Count -eq 0) { throw ('No adapter exposes ' + $kw) }
+
+            $saved = @()
+            $restart = @()
+
+            foreach ($p in $props) {
+                $saved += @{ Name=[string]$p.Name; Keyword=$kw; Value=@($p.RegistryValue) }
+                Set-NetAdapterAdvancedProperty -Name $p.Name -RegistryKeyword $kw -RegistryValue 0 -NoRestart -ErrorAction Stop
+                $restart += [string]$p.Name
+            }
+
+            foreach ($n in @($restart | Select-Object -Unique)) {
+                Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue
+            }
+
+            return @{ Items=$saved }
+        }.GetNewClosure()
+
+        $undo = {
+            param($D)
+            $restart = @()
+
+            foreach ($p in @($D.Items)) {
+                Set-NetAdapterAdvancedProperty -Name ([string]$p.Name) -RegistryKeyword ([string]$p.Keyword) -RegistryValue @($p.Value) -NoRestart -ErrorAction SilentlyContinue
+                $restart += [string]$p.Name
+            }
+
+            foreach ($n in @($restart | Select-Object -Unique)) {
+                Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue
+            }
+        }.GetNewClosure()
+
+        $test = {
+            $props = @(Get-NicAdvancedByKeyword $kw)
+            if ($props.Count -eq 0) { return $false }
+
+            foreach ($p in $props) {
+                if ([string](@($p.RegistryValue)[0]) -ne '0') { return $false }
+            }
+
+            return $true
+        }.GetNewClosure()
+
+        $out += @{
+            Id=$x.Id; Category='net'; Group='Adapter performance / latency'
+            Name=$x.Name; Risk='Medium'; Recommended=$false
+            Desc=($x.Desc + ' Applying or undoing this briefly restarts the affected network adapter.')
+            Guard=$guard; Apply=$apply; Undo=$undo; Test=$test
+        }
+    }
+
+    $nicMax = @(
+        @{ Id='nic-rx-buffers-max'; Pattern='(?i)^Receive Buffers$'; Name='Network receive buffers: Maximum'; Desc='Uses the largest Receive Buffers value advertised by the NIC driver. This can improve burst handling and reduce dropped packets, with a small memory cost.' },
+        @{ Id='nic-tx-buffers-max'; Pattern='(?i)^Transmit Buffers$'; Name='Network transmit buffers: Maximum'; Desc='Uses the largest Transmit Buffers value advertised by the NIC driver. This can help burst handling but is not a guaranteed ping reduction.' },
+        @{ Id='nic-rss-queues-max'; Pattern='(?i)(Maximum Number of RSS Queues|RSS Queues)'; Name='RSS queue count: Maximum supported'; Desc='Uses the largest RSS queue value the NIC driver advertises, allowing receive processing to spread across more queues/CPU cores where supported.' },
+        @{ Id='wifi-tx-power-max'; Pattern='(?i)^Transmit Power$'; Name='Wi-Fi transmit power: Maximum'; Desc='On Wi-Fi adapters exposing Transmit Power, selects the largest driver-advertised value for signal/performance consistency at the cost of power.' }
+    )
+
+    foreach ($x in $nicMax) {
+        $pat = [string]$x.Pattern
+
+        $guard = {
+            foreach ($p in @(Get-NicAdvancedByDisplayPattern $pat)) {
+                if ($null -ne (Get-NicAdvancedNumericMax $p)) { return $true }
+            }
+            return $false
+        }.GetNewClosure()
+
+        $apply = {
+            $props = @(Get-NicAdvancedByDisplayPattern $pat)
+            $saved = @()
+            $restart = @()
+
+            foreach ($p in $props) {
+                $mx = Get-NicAdvancedNumericMax $p
+                if ($null -eq $mx) { continue }
+
+                $saved += @{ Name=[string]$p.Name; Keyword=[string]$p.RegistryKeyword; Value=@($p.RegistryValue) }
+                Set-NetAdapterAdvancedProperty -Name $p.Name -RegistryKeyword $p.RegistryKeyword -RegistryValue $mx -NoRestart -ErrorAction Stop
+                $restart += [string]$p.Name
+            }
+
+            if ($saved.Count -eq 0) { throw 'No compatible numeric NIC property was found.' }
+
+            foreach ($n in @($restart | Select-Object -Unique)) {
+                Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue
+            }
+
+            return @{ Items=$saved }
+        }.GetNewClosure()
+
+        $undo = {
+            param($D)
+            $restart = @()
+
+            foreach ($p in @($D.Items)) {
+                Set-NetAdapterAdvancedProperty -Name ([string]$p.Name) -RegistryKeyword ([string]$p.Keyword) -RegistryValue @($p.Value) -NoRestart -ErrorAction SilentlyContinue
+                $restart += [string]$p.Name
+            }
+
+            foreach ($n in @($restart | Select-Object -Unique)) {
+                Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue
+            }
+        }.GetNewClosure()
+
+        $test = {
+            $props = @(Get-NicAdvancedByDisplayPattern $pat)
+            if ($props.Count -eq 0) { return $false }
+
+            $checked = $false
+            foreach ($p in $props) {
+                $mx = Get-NicAdvancedNumericMax $p
+                if ($null -eq $mx) { continue }
+
+                $checked = $true
+                if ([int](@($p.RegistryValue)[0]) -ne [int]$mx) { return $false }
+            }
+
+            return $checked
+        }.GetNewClosure()
+
+        $out += @{
+            Id=$x.Id; Category='net'; Group='Adapter performance / latency'
+            Name=$x.Name; Risk='Medium'; Recommended=$false
+            Desc=($x.Desc + ' Applying or undoing this briefly restarts the affected network adapter.')
+            Guard=$guard; Apply=$apply; Undo=$undo; Test=$test
+        }
+    }
+
+    # -------------------------- Storage latency ------------------------------
+    $storagePower = @(
+        @{ Id='disk-idle-never-ac'; Sub='SUB_DISK'; Setting='DISKIDLE'; Value=0; Name='Disk idle timeout: Never (AC)'; Risk='Low';
+           Desc='Prevents the active power plan from powering storage down due to the disk idle timer while plugged in. This avoids storage wake latency, especially on HDDs, but increases idle power.' },
+
+        @{ Id='nvme-primary-latency-0'; Sub='SUB_DISK'; Setting='fc95af4d-40e7-4b6d-835a-56d131dbc80e'; Value=0; Name='NVMe primary transition latency tolerance: 0 ms'; Risk='Medium';
+           Desc='Sets the StorNVMe primary transition-latency tolerance to 0 ms on AC power, biasing supported NVMe drives away from deeper power states with non-zero exit latency.' },
+
+        @{ Id='nvme-secondary-latency-0'; Sub='SUB_DISK'; Setting='dbc9e238-6de9-49e3-92cd-8c2b4946b472'; Value=0; Name='NVMe secondary transition latency tolerance: 0 ms'; Risk='Medium';
+           Desc='Sets the StorNVMe secondary transition-latency tolerance to 0 ms on AC power, favoring responsiveness over storage power saving.' },
+
+        @{ Id='ahci-link-active'; Sub='SUB_DISK'; Setting='0b2d69d7-a2a1-449c-9680-f91c70521c60'; Value=0; Name='AHCI link power management: Active'; Risk='Medium';
+           Desc='Selects Active AHCI link mode on AC power, disabling HIPM/DIPM link power saving to avoid SATA link sleep/wake latency.' }
+    )
+
+    foreach ($x in $storagePower) {
+        $sub = [string]$x.Sub
+        $setting = [string]$x.Setting
+        $value = [int]$x.Value
+
+        $guard = { Test-PowerCfgSettingAvailable $sub $setting }.GetNewClosure()
+        $apply = { Set-ActivePowerCfgAcValue $sub $setting $value }.GetNewClosure()
+        $undo  = { param($D) Restore-PowerCfgAcValue $D }.GetNewClosure()
+        $test  = { Test-PowerCfgAcValue $sub $setting $value }.GetNewClosure()
+
+        $out += @{
+            Id=$x.Id; Category='storage'; Group='Storage latency / power'
+            Name=$x.Name; Risk=$x.Risk; Recommended=$false; Desc=$x.Desc
+            Guard=$guard; Apply=$apply; Undo=$undo; Test=$test
+        }
+    }
+
+    return @($out)
+}
+
+$script:Tweaks = @($script:Tweaks) + @(Get-PurePerformanceTweaksV10)
+
 # Hide tweaks that do not apply to this PC (for example Windows 11 only ones on Windows 10).
 $script:Tweaks = @($script:Tweaks | Where-Object { (-not $_.Guard) -or [bool](& $_.Guard) })
-$script:Tweaks = @($script:Tweaks) + @(Get-AppOptimizerTweaks)
+# v1.0: detected App Optimizer entries are intentionally not added to the tweak catalog.
 
 # ----------------------------------------------------------------------------
 # Engine: status, apply, undo
