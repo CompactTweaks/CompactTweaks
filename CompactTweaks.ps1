@@ -14,8 +14,8 @@
     Keep this file ASCII-only so Windows PowerShell 5.1 reads it correctly.
 #>
 
-$script:Version = '1.2.1'
-$script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1?v=121fixed'
+$script:Version = '1.2.2'
+$script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1?v=122ntfskernel'
 
 # ----------------------------------------------------------------------------
 # Guards: Windows only, administrator, STA thread
@@ -4341,6 +4341,31 @@ function Get-PurePerformanceTweaksV12 {
             $v = Get-BcdFlag 'hypervisorlaunchtype'
             return [bool]($v -and $v.ToLowerInvariant() -eq 'off')
         }
+    }
+
+    # v1.2.2: requested low-level file-system / kernel controls.
+    # Real Windows settings, but intentionally not marked Recommended because
+    # neither is a guaranteed gaming/FPS improvement.
+
+    $out += @{
+        Id='ntfs-tunneling-off'; Category='storage'; Group='NTFS / file-system overhead'
+        Name='Disable NTFS file-system tunneling'; Risk='Medium'; Recommended=$false
+        Desc='Sets MaximumTunnelEntries to 0, disabling the NTFS tunneling cache. Windows normally keeps recently deleted/renamed file metadata briefly for compatibility. This removes that cache/compatibility behavior. It is a real NTFS control, but it is not a guaranteed FPS tweak and older software that relies on tunneling can behave differently. Undo restores the exact previous registry state.'
+        Restart='restart'
+        Registry=@(
+            (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' 'MaximumTunnelEntries' 'DWord' 0)
+        )
+    }
+
+    $out += @{
+        Id='kernel-worker-threads-more'; Category='cpu'; Group='Kernel / I-O scheduling'
+        Name='Increase additional kernel worker threads'; Risk='Medium'; Recommended=$false
+        Desc='Adds 16 critical and 16 delayed kernel worker threads through Windows Executive settings. Microsoft documents AdditionalCriticalWorkerThreads for increasing queued file-cache/storage I/O and has used both critical and delayed worker-thread settings in server/application tuning examples. This is mainly an I/O/workload tuning option, not a guaranteed gaming FPS increase. Undo restores both original values.'
+        Restart='restart'
+        Registry=@(
+            (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Executive' 'AdditionalCriticalWorkerThreads' 'DWord' 16),
+            (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Executive' 'AdditionalDelayedWorkerThreads' 'DWord' 16)
+        )
     }
 
     return @($out)
