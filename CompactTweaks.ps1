@@ -14,7 +14,7 @@
     Keep this file ASCII-only so Windows PowerShell 5.1 reads it correctly.
 #>
 
-$script:Version = '1.0.0'
+$script:Version = '1.1.0'
 $script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1'
 
 # ----------------------------------------------------------------------------
@@ -3733,6 +3733,389 @@ $script:Tweaks = @($script:Tweaks) + @(Get-PurePerformanceTweaksV10)
 
 # Hide tweaks that do not apply to this PC (for example Windows 11 only ones on Windows 10).
 $script:Tweaks = @($script:Tweaks | Where-Object { (-not $_.Guard) -or [bool](& $_.Guard) })
+
+# ----------------------------------------------------------------------------
+# v1.1 PERFORMANCE EXPANSION: +200 entries
+#
+# 150 per-game Windows IFEO scheduling controls:
+#   - Above Normal CPU priority
+#   - High I/O priority
+#   - Highest supported page priority
+#
+# 50 system performance/background controls:
+#   - 20 NIC driver latency/power-saving controls
+#   - 15 individually reversible scheduled-task trims
+#   - 15 background-content/activity registry trims
+#
+# These are individual controls, not a claim that every item increases raw FPS.
+# Aggressive/situational entries remain Recommended = $false.
+# ----------------------------------------------------------------------------
+
+function Get-NicAdvancedByDisplayNamePatternV11 {
+    param([string]$Pattern)
+
+    $found = @()
+    if (-not (Get-Command Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue)) {
+        return $found
+    }
+
+    foreach ($adapter in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+        try {
+            foreach ($p in @(Get-NetAdapterAdvancedProperty -Name $adapter.Name -AllProperties -ErrorAction Stop)) {
+                if (([string]$p.DisplayName) -match $Pattern) {
+                    $found += $p
+                }
+            }
+        } catch { }
+    }
+
+    return @($found)
+}
+
+function Get-NicMatchingDisplayValueV11 {
+    param(
+        $Property,
+        [string]$DesiredPattern
+    )
+
+    foreach ($v in @($Property.ValidDisplayValues)) {
+        if (([string]$v) -match $DesiredPattern) {
+            return [string]$v
+        }
+    }
+
+    return $null
+}
+
+function Get-PurePerformanceTweaksV11 {
+    $out = @()
+
+    # ========================================================================
+    # 150 PER-GAME REGISTRY PERFORMANCE CONTROLS
+    # ========================================================================
+    # Windows Image File Execution Options\PerfOptions is used so these settings
+    # apply when the executable launches, without modifying game files.
+    #
+    # CPU priority uses Above Normal, NOT High/Realtime, to avoid starving audio,
+    # networking, anti-cheat, input, Discord, capture tools, etc.
+    #
+    # PagePriority=5 is the highest Windows memory page-priority class accepted
+    # by the IFEO PerfOptions mechanism.
+    # ========================================================================
+
+    $games = @(
+        @{ Id='fortnite'; Exe='FortniteClient-Win64-Shipping.exe'; Label='Fortnite' },
+        @{ Id='eldenring'; Exe='eldenring.exe'; Label='Elden Ring' },
+        @{ Id='cyberpunk'; Exe='Cyberpunk2077.exe'; Label='Cyberpunk 2077' },
+        @{ Id='hogwarts'; Exe='HogwartsLegacy.exe'; Label='Hogwarts Legacy' },
+        @{ Id='witcher3'; Exe='witcher3.exe'; Label='The Witcher 3' },
+        @{ Id='doom-eternal'; Exe='DOOMEternalx64vk.exe'; Label='DOOM Eternal' },
+        @{ Id='doom-2016'; Exe='DOOMx64vk.exe'; Label='DOOM 2016' },
+        @{ Id='bf2042'; Exe='bf2042.exe'; Label='Battlefield 2042' },
+        @{ Id='bf1'; Exe='bf1.exe'; Label='Battlefield 1' },
+        @{ Id='bfv'; Exe='bfv.exe'; Label='Battlefield V' },
+        @{ Id='jedi-fallen'; Exe='starwarsjedifallenorder.exe'; Label='Star Wars Jedi: Fallen Order' },
+        @{ Id='jedi-survivor'; Exe='JediSurvivor.exe'; Label='Star Wars Jedi: Survivor' },
+        @{ Id='ac-valhalla'; Exe='ACValhalla.exe'; Label="Assassin's Creed Valhalla" },
+        @{ Id='ac-mirage'; Exe='ACMirage.exe'; Label="Assassin's Creed Mirage" },
+        @{ Id='farcry6'; Exe='FarCry6.exe'; Label='Far Cry 6' },
+        @{ Id='hitman3'; Exe='HITMAN3.exe'; Label='HITMAN 3 / World of Assassination' },
+        @{ Id='dota2'; Exe='dota2.exe'; Label='Dota 2' },
+        @{ Id='rust'; Exe='RustClient.exe'; Label='Rust' },
+        @{ Id='tarkov'; Exe='EscapeFromTarkov.exe'; Label='Escape from Tarkov' },
+        @{ Id='hunt'; Exe='HuntGame.exe'; Label='Hunt: Showdown' },
+        @{ Id='squad'; Exe='SquadGame.exe'; Label='Squad' },
+        @{ Id='readyornot'; Exe='ReadyOrNot-Win64-Shipping.exe'; Label='Ready or Not' },
+        @{ Id='palworld'; Exe='Palworld-Win64-Shipping.exe'; Label='Palworld' },
+        @{ Id='dbd'; Exe='DeadByDaylight-Win64-Shipping.exe'; Label='Dead by Daylight' },
+        @{ Id='ark-se'; Exe='ShooterGame.exe'; Label='ARK: Survival Evolved' },
+        @{ Id='ark-asa'; Exe='ArkAscended.exe'; Label='ARK: Survival Ascended' },
+        @{ Id='terraria'; Exe='Terraria.exe'; Label='Terraria' },
+        @{ Id='project-zomboid'; Exe='ProjectZomboid64.exe'; Label='Project Zomboid' },
+        @{ Id='factorio'; Exe='factorio.exe'; Label='Factorio' },
+        @{ Id='satisfactory'; Exe='FactoryGame-Win64-Shipping.exe'; Label='Satisfactory' },
+        @{ Id='eu4'; Exe='eu4.exe'; Label='Europa Universalis IV' },
+        @{ Id='ck3'; Exe='ck3.exe'; Label='Crusader Kings III' },
+        @{ Id='hoi4'; Exe='hoi4.exe'; Label='Hearts of Iron IV' },
+        @{ Id='stellaris'; Exe='stellaris.exe'; Label='Stellaris' },
+        @{ Id='civ6'; Exe='CivilizationVI.exe'; Label='Civilization VI' },
+        @{ Id='warframe'; Exe='Warframe.x64.exe'; Label='Warframe' },
+        @{ Id='warthunder'; Exe='aces.exe'; Label='War Thunder' },
+        @{ Id='wot'; Exe='WorldOfTanks.exe'; Label='World of Tanks' },
+        @{ Id='wows'; Exe='WorldOfWarships64.exe'; Label='World of Warships' },
+        @{ Id='poe'; Exe='PathOfExile_x64.exe'; Label='Path of Exile' },
+        @{ Id='last-epoch'; Exe='LastEpoch.exe'; Label='Last Epoch' },
+        @{ Id='diablo4'; Exe='Diablo IV.exe'; Label='Diablo IV' },
+        @{ Id='d2r'; Exe='D2R.exe'; Label='Diablo II: Resurrected' },
+        @{ Id='sc2'; Exe='SC2_x64.exe'; Label='StarCraft II' },
+        @{ Id='hearthstone'; Exe='Hearthstone.exe'; Label='Hearthstone' },
+        @{ Id='brawlhalla'; Exe='Brawlhalla.exe'; Label='Brawlhalla' },
+        @{ Id='geometrydash'; Exe='GeometryDash.exe'; Label='Geometry Dash' },
+        @{ Id='osu'; Exe='osu!.exe'; Label='osu!' },
+        @{ Id='helldivers2'; Exe='helldivers2.exe'; Label='Helldivers 2' },
+        @{ Id='spacemarine2'; Exe='SpaceMarine2.exe'; Label='Warhammer 40,000: Space Marine 2' }
+    )
+
+    foreach ($g in $games) {
+        $perfPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\' + [string]$g.Exe + '\PerfOptions'
+
+        $out += @{
+            Id=('v11-game-' + $g.Id + '-cpu')
+            Category='cpu'
+            Group='Per-game CPU scheduling'
+            Name=($g.Label + ': Above Normal CPU priority')
+            Risk='Low'
+            Recommended=$false
+            Desc=('Sets ' + $g.Label + ' to Above Normal CPU priority through Windows IFEO PerfOptions. This can help the game win CPU time during background load without the starvation risk of High/Realtime priority. Relaunch the game after applying.')
+            Registry=@((New-RegEntry $perfPath 'CpuPriorityClass' 'DWord' 6))
+        }
+
+        $out += @{
+            Id=('v11-game-' + $g.Id + '-io')
+            Category='storage'
+            Group='Per-game I/O scheduling'
+            Name=($g.Label + ': High I/O priority')
+            Risk='Low'
+            Recommended=$false
+            Desc=('Sets ' + $g.Label + ' to High Windows I/O priority through IFEO PerfOptions. This is aimed at asset streaming and loading while the storage device is busy; it is not a guaranteed raw-FPS increase. Relaunch the game after applying.')
+            Registry=@((New-RegEntry $perfPath 'IoPriority' 'DWord' 3))
+        }
+
+        $out += @{
+            Id=('v11-game-' + $g.Id + '-page')
+            Category='storage'
+            Group='Per-game memory scheduling'
+            Name=($g.Label + ': Maximum page priority')
+            Risk='Low'
+            Recommended=$false
+            Desc=('Sets ' + $g.Label + ' memory pages to Windows page priority 5 through IFEO PerfOptions. This can make the memory manager less eager to reclaim the game pages under memory pressure. It does not add RAM. Relaunch the game after applying.')
+            Registry=@((New-RegEntry $perfPath 'PagePriority' 'DWord' 5))
+        }
+    }
+
+    # ========================================================================
+    # 20 NIC DRIVER PERFORMANCE / LATENCY CONTROLS
+    # ========================================================================
+    # These use the adapter's advertised display values and are hidden when the
+    # driver does not expose the matching feature/value.
+    # ========================================================================
+
+    $nicDisplay = @(
+        @{ Id='flow-control-off'; Pattern='(?i)^Flow Control$'; Want='(?i)Disabled|Off|None'; Name='NIC Flow Control: Off'; Desc='Disables Ethernet pause-frame Flow Control where the driver exposes it. This may reduce pause-induced latency, but can increase packet loss on congested links.' },
+        @{ Id='interrupt-moderation-off'; Pattern='(?i)^Interrupt Moderation$'; Want='(?i)Disabled|Off'; Name='NIC Interrupt Moderation: Off'; Desc='Disables interrupt moderation where supported. This usually trades higher CPU interrupt load for lower packet batching latency.' },
+        @{ Id='lso-v4-off'; Pattern='(?i)Large Send Offload.*IPv4'; Want='(?i)Disabled|Off'; Name='Large Send Offload v2 IPv4: Off'; Desc='Disables IPv4 Large Send Offload. This can reduce large-packet batching/driver latency on some systems, but may increase CPU use.' },
+        @{ Id='lso-v6-off'; Pattern='(?i)Large Send Offload.*IPv6'; Want='(?i)Disabled|Off'; Name='Large Send Offload v2 IPv6: Off'; Desc='Disables IPv6 Large Send Offload. This can reduce large-packet batching/driver latency on some systems, but may increase CPU use.' },
+        @{ Id='rss-on'; Pattern='(?i)^Receive Side Scaling$'; Want='(?i)Enabled|On'; Name='Receive Side Scaling: On'; Desc='Enables Receive Side Scaling where available so network receive processing can be distributed across CPU cores.' },
+        @{ Id='wake-magic-off'; Pattern='(?i)Wake on Magic Packet'; Want='(?i)Disabled|Off'; Name='Wake on Magic Packet: Off'; Desc='Disables Wake-on-LAN magic-packet handling. This removes an unused power/wake feature on gaming desktops that do not use Wake-on-LAN.' },
+        @{ Id='wake-pattern-off'; Pattern='(?i)Wake on Pattern'; Want='(?i)Disabled|Off'; Name='Wake on Pattern Match: Off'; Desc='Disables network wake pattern matching. Useful only if you do not need the PC to wake from network traffic.' },
+        @{ Id='jumbo-off'; Pattern='(?i)^Jumbo (Packet|Frame)$'; Want='(?i)Disabled|Off|1514'; Name='Jumbo Frames: Off / standard MTU'; Desc='Disables jumbo frames or selects the normal Ethernet frame size where the adapter exposes it. Internet gaming normally uses standard MTU; jumbo frames require end-to-end network support.' },
+        @{ Id='green-ethernet-off'; Pattern='(?i)^Green Ethernet$'; Want='(?i)Disabled|Off'; Name='Green Ethernet: Off'; Desc='Disables vendor Green Ethernet power saving where available to avoid link power-saving transitions.' },
+        @{ Id='gigabit-lite-off'; Pattern='(?i)^Gigabit Lite$'; Want='(?i)Disabled|Off'; Name='Gigabit Lite: Off'; Desc='Disables vendor Gigabit Lite power saving where available. This favors link performance over reduced adapter power.' },
+        @{ Id='auto-disable-gigabit-off'; Pattern='(?i)Auto Disable Gigabit'; Want='(?i)Disabled|Off'; Name='Auto Disable Gigabit: Off'; Desc='Prevents supported adapters from automatically dropping Gigabit capability for power savings.' },
+        @{ Id='system-idle-power-saver-off'; Pattern='(?i)System Idle Power Saver'; Want='(?i)Disabled|Off'; Name='System Idle Power Saver: Off'; Desc='Disables NIC idle power-saving behavior where the driver exposes the option.' },
+        @{ Id='dma-coalescing-off'; Pattern='(?i)DMA Coalescing'; Want='(?i)Disabled|Off'; Name='DMA Coalescing: Off'; Desc='Disables DMA coalescing where supported. This can reduce power-saving batching at the cost of more platform activity.' },
+        @{ Id='adaptive-ifs-off'; Pattern='(?i)Adaptive Inter[- ]Frame Spacing'; Want='(?i)Disabled|Off'; Name='Adaptive Inter-Frame Spacing: Off'; Desc='Disables adaptive inter-frame spacing where available. This avoids a compatibility-oriented throttling feature on some Ethernet adapters.' },
+        @{ Id='reduce-speed-powerdown-off'; Pattern='(?i)Reduce Speed.*Power Down'; Want='(?i)Disabled|Off'; Name='Reduce Speed On Power Down: Off'; Desc='Stops supported adapters lowering link speed for power-down transitions.' },
+        @{ Id='ultra-low-power-off'; Pattern='(?i)Ultra Low Power'; Want='(?i)Disabled|Off'; Name='Ultra Low Power mode: Off'; Desc='Disables vendor ultra-low-power NIC behavior where exposed, favoring readiness over power saving.' },
+        @{ Id='adapter-power-saving-off'; Pattern='(?i)^Power Saving Mode$'; Want='(?i)Disabled|Off|Maximum Performance'; Name='Adapter Power Saving Mode: Off'; Desc='Disables adapter-specific power saving or selects Maximum Performance where the driver offers that wording.' },
+        @{ Id='mimo-no-smps'; Pattern='(?i)MIMO Power Save Mode'; Want='(?i)No SMPS|Disabled'; Name='Wi-Fi MIMO power save: No SMPS'; Desc='On supported Wi-Fi adapters, disables spatial-multiplexing power save so the radio can keep full MIMO capability available.' },
+        @{ Id='uapsd-off'; Pattern='(?i)U-APSD|UAPSD'; Want='(?i)Disabled|Off'; Name='Wi-Fi U-APSD: Off'; Desc='Disables WMM power-save delivery where exposed. This may reduce wireless power-saving latency at the cost of battery life.' },
+        @{ Id='fat-channel-intolerant-off'; Pattern='(?i)Fat Channel Intolerant'; Want='(?i)Disabled|Off'; Name='Wi-Fi Fat Channel Intolerant: Off'; Desc='Disables the Wi-Fi Fat Channel Intolerant flag where exposed, allowing the adapter to use wider channels when the AP and local radio environment support them.' }
+    )
+
+    foreach ($x in $nicDisplay) {
+        $pattern = [string]$x.Pattern
+        $want = [string]$x.Want
+
+        $guard = {
+            foreach ($p in @(Get-NicAdvancedByDisplayNamePatternV11 $pattern)) {
+                if (Get-NicMatchingDisplayValueV11 $p $want) { return $true }
+            }
+            return $false
+        }.GetNewClosure()
+
+        $apply = {
+            $saved = @()
+            $restart = @()
+
+            foreach ($p in @(Get-NicAdvancedByDisplayNamePatternV11 $pattern)) {
+                $target = Get-NicMatchingDisplayValueV11 $p $want
+                if (-not $target) { continue }
+
+                $saved += @{
+                    Name=[string]$p.Name
+                    DisplayName=[string]$p.DisplayName
+                    DisplayValue=[string]$p.DisplayValue
+                }
+
+                Set-NetAdapterAdvancedProperty -Name $p.Name -DisplayName $p.DisplayName -DisplayValue $target -NoRestart -ErrorAction Stop
+                $restart += [string]$p.Name
+            }
+
+            if ($saved.Count -eq 0) { throw 'No compatible adapter property/value was found.' }
+
+            foreach ($n in @($restart | Select-Object -Unique)) {
+                Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue
+            }
+
+            return @{ Items=$saved }
+        }.GetNewClosure()
+
+        $undo = {
+            param($D)
+            $restart = @()
+
+            foreach ($p in @($D.Items)) {
+                try {
+                    Set-NetAdapterAdvancedProperty -Name ([string]$p.Name) -DisplayName ([string]$p.DisplayName) -DisplayValue ([string]$p.DisplayValue) -NoRestart -ErrorAction Stop
+                    $restart += [string]$p.Name
+                } catch { }
+            }
+
+            foreach ($n in @($restart | Select-Object -Unique)) {
+                Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue
+            }
+        }.GetNewClosure()
+
+        $test = {
+            $props = @(Get-NicAdvancedByDisplayNamePatternV11 $pattern)
+            if ($props.Count -eq 0) { return $false }
+
+            $checked = $false
+            foreach ($p in $props) {
+                $target = Get-NicMatchingDisplayValueV11 $p $want
+                if (-not $target) { continue }
+
+                $checked = $true
+                if ([string]$p.DisplayValue -ne [string]$target) { return $false }
+            }
+
+            return $checked
+        }.GetNewClosure()
+
+        $out += @{
+            Id=('v11-nic-' + $x.Id)
+            Category='net'
+            Group='NIC performance / latency'
+            Name=$x.Name
+            Risk='Medium'
+            Recommended=$false
+            Desc=($x.Desc + ' Applying or undoing this briefly restarts the affected network adapter.')
+            Guard=$guard
+            Apply=$apply
+            Undo=$undo
+            Test=$test
+        }
+    }
+
+    # ========================================================================
+    # 15 SCHEDULED BACKGROUND TASK TRIMS
+    # ========================================================================
+
+    $tasks = @(
+        @{ Id='winsat'; Path='\Microsoft\Windows\Maintenance\WinSAT'; Name='Disable scheduled WinSAT'; Desc='Stops scheduled Windows System Assessment Tool benchmarking. Manual WinSAT can still be run when needed.' },
+        @{ Id='diag-recommended'; Path='\Microsoft\Windows\Diagnosis\RecommendedTroubleshootingScanner'; Name='Disable Recommended Troubleshooting Scanner'; Desc='Stops the scheduled recommended-troubleshooting scan. Manual troubleshooters remain available.' },
+        @{ Id='diag-scheduled'; Path='\Microsoft\Windows\Diagnosis\Scheduled'; Name='Disable scheduled Windows diagnostics'; Desc='Stops the generic scheduled Windows diagnostics task where present.' },
+        @{ Id='device-info'; Path='\Microsoft\Windows\Device Information\Device'; Name='Disable Device Information task'; Desc='Stops a scheduled device-information inventory task where present.' },
+        @{ Id='device-info-user'; Path='\Microsoft\Windows\Device Information\Device User'; Name='Disable Device Information user task'; Desc='Stops the per-user device-information scheduled task where present.' },
+        @{ Id='nettrace-gather'; Path='\Microsoft\Windows\NetTrace\GatherNetworkInfo'; Name='Disable GatherNetworkInfo task'; Desc='Stops the scheduled network information gathering task where present.' },
+        @{ Id='pi-sqm'; Path='\Microsoft\Windows\PI\Sqm-Tasks'; Name='Disable PI SQM task'; Desc='Stops a Software Quality Metrics scheduled task where present.' },
+        @{ Id='settingsync-upload'; Path='\Microsoft\Windows\SettingSync\BackgroundUploadTask'; Name='Disable Settings Sync background upload'; Desc='Stops scheduled background upload for Windows Settings Sync. Do not use if you rely on settings synchronization between Microsoft-account PCs.' },
+        @{ Id='settingsync-network'; Path='\Microsoft\Windows\SettingSync\NetworkStateChangeTask'; Name='Disable Settings Sync network task'; Desc='Stops Settings Sync work triggered by network changes. Skip if you use Windows settings synchronization.' },
+        @{ Id='settingsync-backup'; Path='\Microsoft\Windows\SettingSync\BackupTask'; Name='Disable Settings Sync backup task'; Desc='Stops the scheduled Settings Sync backup task where present.' },
+        @{ Id='location-notifications'; Path='\Microsoft\Windows\Location\Notifications'; Name='Disable Location notifications task'; Desc='Stops a scheduled Windows Location notification task. Skip if you use location-dependent Windows features.' },
+        @{ Id='location-dialog'; Path='\Microsoft\Windows\Location\WindowsActionDialog'; Name='Disable Location action-dialog task'; Desc='Stops a scheduled Location action-dialog task where present.' },
+        @{ Id='mobile-metadata'; Path='\Microsoft\Windows\Mobile Broadband Accounts\MNO Metadata Parser'; Name='Disable mobile broadband metadata task'; Desc='Stops scheduled mobile-operator metadata parsing. Desktop Ethernet/Wi-Fi PCs normally do not need it.' },
+        @{ Id='upnp-config'; Path='\Microsoft\Windows\UPnP\UPnPHostConfig'; Name='Disable UPnPHostConfig task'; Desc='Stops the UPnP host configuration scheduled task. Skip if you rely on Windows UPnP device-hosting features.' },
+        @{ Id='wdi-resolution'; Path='\Microsoft\Windows\WDI\ResolutionHost'; Name='Disable WDI ResolutionHost task'; Desc='Stops a Windows Diagnostic Infrastructure resolution task where present. Manual troubleshooting may have less automatic remediation.' }
+    )
+
+    foreach ($x in $tasks) {
+        $taskPath = [string]$x.Path
+        $folder = Split-Path -Path $taskPath -Parent
+        $taskName = Split-Path -Path $taskPath -Leaf
+        $taskFolder = $folder.TrimEnd('\') + '\'
+
+        $guard = {
+            return [bool](Get-ScheduledTask -TaskName $taskName -TaskPath $taskFolder -ErrorAction SilentlyContinue)
+        }.GetNewClosure()
+
+        $apply = {
+            $touched = Disable-ScheduledTaskList @($taskPath)
+            if (@($touched).Count -eq 0) {
+                throw 'The task is already disabled or Windows did not allow it to be changed.'
+            }
+            return @{ Tasks=@($touched) }
+        }.GetNewClosure()
+
+        $undo = {
+            param($D)
+            Enable-ScheduledTaskList @($D.Tasks)
+        }.GetNewClosure()
+
+        $test = {
+            $t = Get-ScheduledTask -TaskName $taskName -TaskPath $taskFolder -ErrorAction SilentlyContinue
+            return [bool]($t -and $t.State -eq 'Disabled')
+        }.GetNewClosure()
+
+        $out += @{
+            Id=('v11-task-' + $x.Id)
+            Category='debloat'
+            Group='Background task performance'
+            Name=$x.Name
+            Risk='Low'
+            Recommended=$false
+            Desc=($x.Desc + ' Undo re-enables the task only if Compact Tweaks disabled it.')
+            Guard=$guard
+            Apply=$apply
+            Undo=$undo
+            Test=$test
+        }
+    }
+
+    # ========================================================================
+    # 15 BACKGROUND CONTENT / ACTIVITY REGISTRY TRIMS
+    # ========================================================================
+
+    $cdm = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+    $sysPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+
+    $backgroundRegs = @(
+        @{ Id='contentdelivery-off'; Path=$cdm; Name='ContentDeliveryAllowed'; Value=0; Label='Disable Content Delivery Manager content'; Desc='Stops supported Windows shell promotional/content-delivery experiences for the current user.' },
+        @{ Id='oem-preinstall-off'; Path=$cdm; Name='OemPreInstalledAppsEnabled'; Value=0; Label='Disable OEM suggested app delivery'; Desc='Prevents supported OEM suggested-app content from being delivered through Content Delivery Manager.' },
+        @{ Id='preinstalled-apps-off'; Path=$cdm; Name='PreInstalledAppsEnabled'; Value=0; Label='Disable preinstalled app suggestions'; Desc='Turns off supported preinstalled-app suggestion delivery for the current user.' },
+        @{ Id='preinstalled-ever-off'; Path=$cdm; Name='PreInstalledAppsEverEnabled'; Value=0; Label='Disable preinstalled app re-enablement'; Desc='Stops the Content Delivery Manager flag that permits supported preinstalled-app experiences to be enabled.' },
+        @{ Id='silent-apps-off'; Path=$cdm; Name='SilentInstalledAppsEnabled'; Value=0; Label='Disable silent suggested-app installs'; Desc='Blocks supported silent suggested-app installation through Content Delivery Manager.' },
+        @{ Id='softlanding-off'; Path=$cdm; Name='SoftLandingEnabled'; Value=0; Label='Disable Windows soft-landing tips'; Desc='Stops supported Windows first-run/tip promotional content from Content Delivery Manager.' },
+        @{ Id='systempane-suggestions-off'; Path=$cdm; Name='SystemPaneSuggestionsEnabled'; Value=0; Label='Disable shell app suggestions'; Desc='Disables supported shell/System Pane app suggestions for the current user.' },
+        @{ Id='subcontent-338387-off'; Path=$cdm; Name='SubscribedContent-338387Enabled'; Value=0; Label='Disable subscribed Windows suggestion content 338387'; Desc='Disables one Windows subscribed-content channel used for shell suggestions where present.' },
+        @{ Id='subcontent-338388-off'; Path=$cdm; Name='SubscribedContent-338388Enabled'; Value=0; Label='Disable subscribed Windows suggestion content 338388'; Desc='Disables one Windows subscribed-content channel used for shell suggestions where present.' },
+        @{ Id='subcontent-353694-off'; Path=$cdm; Name='SubscribedContent-353694Enabled'; Value=0; Label='Disable subscribed Windows suggestion content 353694'; Desc='Disables one Windows subscribed-content channel used for shell recommendations where present.' },
+        @{ Id='activityfeed-off'; Path=$sysPol; Name='EnableActivityFeed'; Value=0; Label='Disable Windows Activity Feed'; Desc='Disables the Windows activity-feed policy to reduce cross-device/activity-history background work.' },
+        @{ Id='publish-activities-off'; Path=$sysPol; Name='PublishUserActivities'; Value=0; Label='Disable publishing user activities'; Desc='Prevents Windows from publishing user activity records for activity-history/cross-device features.' },
+        @{ Id='upload-activities-off'; Path=$sysPol; Name='UploadUserActivities'; Value=0; Label='Disable uploading user activities'; Desc='Prevents Windows from uploading user activity records for activity-history/cross-device features.' },
+        @{ Id='crossdevice-clipboard-off'; Path=$sysPol; Name='AllowCrossDeviceClipboard'; Value=0; Label='Disable cross-device clipboard'; Desc='Disables cloud/cross-device clipboard synchronization while leaving normal local clipboard copy/paste available.' },
+        @{ Id='clipboard-history-off'; Path=$sysPol; Name='AllowClipboardHistory'; Value=0; Label='Disable Clipboard History'; Desc='Disables Windows Clipboard History. Normal single-item clipboard copy/paste remains available.' }
+    )
+
+    foreach ($x in $backgroundRegs) {
+        $out += @{
+            Id=('v11-bg-' + $x.Id)
+            Category='windows'
+            Group='Background activity performance'
+            Name=$x.Label
+            Risk='Low'
+            Recommended=$false
+            Desc=($x.Desc + ' This is a background-overhead trim, not a guaranteed raw-FPS increase.')
+            Registry=@((New-RegEntry ([string]$x.Path) ([string]$x.Name) 'DWord' ([int]$x.Value)))
+        }
+    }
+
+    return @($out)
+}
+
+$script:Tweaks = @($script:Tweaks) + @(Get-PurePerformanceTweaksV11)
+
 # v1.0: detected App Optimizer entries are intentionally not added to the tweak catalog.
 
 # ----------------------------------------------------------------------------
