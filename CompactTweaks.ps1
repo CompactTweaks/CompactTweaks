@@ -3510,6 +3510,11 @@ $xaml = @'
       <!-- Sidebar -->
       <Border Grid.Column="0" Background="Black" BorderBrush="#26FFFFFF" BorderThickness="0,0,1,0" ClipToBounds="True">
         <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
           <Canvas Width="268" Height="900" ClipToBounds="True">
             <Canvas.Effect>
               <BlurEffect Radius="55" KernelType="Gaussian"/>
@@ -3555,11 +3560,6 @@ $xaml = @'
               </Ellipse.Fill>
             </Ellipse>
           </Canvas>
-          <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-          </Grid.RowDefinitions>
           <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="20,22,20,14">
             <Border Width="40" Height="40" CornerRadius="13" Background="White">
               <Viewbox Width="22" Height="22">
