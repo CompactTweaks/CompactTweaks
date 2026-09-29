@@ -14,7 +14,7 @@
     Keep this file ASCII-only so Windows PowerShell 5.1 reads it correctly.
 #>
 
-$script:Version = '0.8.0'
+$script:Version = '0.9.0'
 $script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1'
 
 # ----------------------------------------------------------------------------
@@ -1593,6 +1593,134 @@ function Get-ExtraPerformanceTweaks {
     return $out
 }
 
+
+# ----------------------------------------------------------------------------
+# v0.9 CPU/GPU helpers
+# ----------------------------------------------------------------------------
+function Get-PowerCfgSettingSnapshot {
+    param([string]$SubGroup, [string]$Setting)
+
+    $scheme = Get-ActiveSchemeGuid
+    if (-not $scheme) { throw 'Could not read the active power plan.' }
+
+    $q = (& powercfg.exe /q $scheme $SubGroup $Setting 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw ("Power setting {0}/{1} is not supported on this PC." -f $SubGroup, $Setting) }
+
+    $ac = [regex]::Match($q, '(?m)Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)')
+    $dc = [regex]::Match($q, '(?m)Current DC Power Setting Index:\s*0x([0-9a-fA-F]+)')
+    if (-not $ac.Success) { throw ("Could not read power setting {0}/{1}." -f $SubGroup, $Setting) }
+
+    $acValue = [Convert]::ToInt32($ac.Groups[1].Value, 16)
+    $dcValue = $acValue
+    if ($dc.Success) { $dcValue = [Convert]::ToInt32($dc.Groups[1].Value, 16) }
+
+    return @{
+        Scheme   = $scheme
+        SubGroup = $SubGroup
+        Setting  = $Setting
+        PrevAc   = $acValue
+        PrevDc   = $dcValue
+    }
+}
+
+function Set-ActivePowerCfgAcValue {
+    param([string]$SubGroup, [string]$Setting, [int]$Value)
+
+    $snap = Get-PowerCfgSettingSnapshot $SubGroup $Setting
+    $msg = (& powercfg.exe /setacvalueindex $snap.Scheme $SubGroup $Setting $Value 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw ("powercfg could not set {0}: {1}" -f $Setting, $msg.Trim()) }
+
+    & powercfg.exe /setactive $snap.Scheme | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'powercfg could not reactivate the current power plan.' }
+
+    return $snap
+}
+
+function Restore-PowerCfgAcValue {
+    param($Data)
+    if (-not $Data) { return }
+
+    & powercfg.exe /setacvalueindex ([string]$Data.Scheme) ([string]$Data.SubGroup) ([string]$Data.Setting) ([string][int]$Data.PrevAc) | Out-Null
+    if ((Get-ActiveSchemeGuid) -eq [string]$Data.Scheme) {
+        & powercfg.exe /setactive ([string]$Data.Scheme) | Out-Null
+    }
+}
+
+function Test-PowerCfgAcValue {
+    param([string]$SubGroup, [string]$Setting, [int]$Value)
+    try {
+        $s = Get-PowerCfgSettingSnapshot $SubGroup $Setting
+        return ([int]$s.PrevAc -eq $Value)
+    } catch { return $false }
+}
+
+function Test-PowerCfgSettingAvailable {
+    param([string]$SubGroup, [string]$Setting)
+    try {
+        [void](Get-PowerCfgSettingSnapshot $SubGroup $Setting)
+        return $true
+    } catch { return $false }
+}
+
+function Get-MinecraftJavaExecutables {
+    $found = @()
+
+    # Running Java games/clients.
+    foreach ($p in @(Get-Process -Name 'javaw' -ErrorAction SilentlyContinue)) {
+        try {
+            if ($p.Path -and (Test-Path -LiteralPath $p.Path)) { $found += $p.Path }
+        } catch { }
+    }
+
+    # Minecraft Launcher runtime and Lunar Client runtimes.
+    $roots = @(
+        (Join-Path $env:APPDATA '.minecraft\runtime'),
+        (Join-Path $env:USERPROFILE '.lunarclient\jre')
+    )
+
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        try {
+            $found += @(Get-ChildItem -LiteralPath $root -Filter 'javaw.exe' -File -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 24 -ExpandProperty FullName)
+        } catch { }
+    }
+
+    return @($found | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+}
+
+function Set-HighPerformanceGpuPreference {
+    param([string[]]$Paths)
+
+    $paths2 = @($Paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+    if ($paths2.Count -eq 0) { throw 'No matching game executable was found.' }
+
+    $reg = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+    $saved = @()
+
+    foreach ($exe in $paths2) {
+        $snap = Get-RegSnapshot $reg $exe
+        Set-RegValue -Path $reg -Name $exe -Type 'String' -Value 'GpuPreference=2;'
+        $saved += $snap
+    }
+
+    return @{ Saved = $saved; Paths = $paths2 }
+}
+
+function Test-HighPerformanceGpuPreference {
+    param([string[]]$Paths)
+
+    $paths2 = @($Paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+    if ($paths2.Count -eq 0) { return $false }
+
+    $reg = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+    foreach ($exe in $paths2) {
+        $s = Get-RegSnapshot $reg $exe
+        if (-not $s.Existed -or ([string]$s.Value) -notmatch 'GpuPreference=2;') { return $false }
+    }
+    return $true
+}
+
 $script:Tweaks = @(
 
     # ================================ CPU OPTIMIZATIONS ================================
@@ -1649,28 +1777,28 @@ $script:Tweaks = @(
        } },
 
     @{ Id = 'perfboost-policy'; Category = 'cpu'; Group = 'Power'; Name = 'Aggressive processor performance boost policy'; Risk = 'Medium'; Recommended = $false
-       Desc = 'Sets the active power plan processor boost policy (PERFBOOSTPOLICY) to its most aggressive value, so the CPU is quicker to jump to a higher clock under load. This applies to whichever power plan is active right now, so apply it after choosing your plan. Undo restores the previous value.'
+       Desc = 'Sets the active power plan processor boost policy (PERFBOOSTPOL) to its most aggressive value, so the CPU is quicker to jump to a higher clock under load. This applies to whichever power plan is active right now, so apply it after choosing your plan. Undo restores the previous value.'
        Apply = {
            $scheme = Get-ActiveSchemeGuid
            if (-not $scheme) { throw 'Could not read the active power plan.' }
-           $ac = (& powercfg.exe /q $scheme SUB_PROCESSOR PERFBOOSTPOLICY | Out-String)
+           $ac = (& powercfg.exe /q $scheme SUB_PROCESSOR PERFBOOSTPOL | Out-String)
            $prevAc = 0; $m = [regex]::Match($ac, '(?m)Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)'); if ($m.Success) { $prevAc = [Convert]::ToInt32($m.Groups[1].Value, 16) }
            $prevDc = 0; $m2 = [regex]::Match($ac, '(?m)Current DC Power Setting Index:\s*0x([0-9a-fA-F]+)'); if ($m2.Success) { $prevDc = [Convert]::ToInt32($m2.Groups[1].Value, 16) }
-           & powercfg.exe /setacvalueindex $scheme SUB_PROCESSOR PERFBOOSTPOLICY 100 | Out-Null
-           & powercfg.exe /setdcvalueindex $scheme SUB_PROCESSOR PERFBOOSTPOLICY 100 | Out-Null
+           & powercfg.exe /setacvalueindex $scheme SUB_PROCESSOR PERFBOOSTPOL 100 | Out-Null
+           & powercfg.exe /setdcvalueindex $scheme SUB_PROCESSOR PERFBOOSTPOL 100 | Out-Null
            & powercfg.exe /setactive $scheme | Out-Null
            return @{ Scheme = $scheme; PrevAc = $prevAc; PrevDc = $prevDc }
        }
        Undo = {
            param($D)
-           & powercfg.exe /setacvalueindex ([string]$D.Scheme) SUB_PROCESSOR PERFBOOSTPOLICY ([string][int]$D.PrevAc) | Out-Null
-           & powercfg.exe /setdcvalueindex ([string]$D.Scheme) SUB_PROCESSOR PERFBOOSTPOLICY ([string][int]$D.PrevDc) | Out-Null
+           & powercfg.exe /setacvalueindex ([string]$D.Scheme) SUB_PROCESSOR PERFBOOSTPOL ([string][int]$D.PrevAc) | Out-Null
+           & powercfg.exe /setdcvalueindex ([string]$D.Scheme) SUB_PROCESSOR PERFBOOSTPOL ([string][int]$D.PrevDc) | Out-Null
            & powercfg.exe /setactive ([string]$D.Scheme) | Out-Null
        }
        Test = {
            $scheme = Get-ActiveSchemeGuid
            if (-not $scheme) { return $false }
-           $out = (& powercfg.exe /q $scheme SUB_PROCESSOR PERFBOOSTPOLICY | Out-String)
+           $out = (& powercfg.exe /q $scheme SUB_PROCESSOR PERFBOOSTPOL | Out-String)
            $m = [regex]::Match($out, '(?m)Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)')
            return [bool]($m.Success -and [Convert]::ToInt32($m.Groups[1].Value, 16) -eq 100)
        } },
@@ -1793,7 +1921,81 @@ $script:Tweaks = @(
            return [bool]($f -and ($f -match '^(?i:yes|true)$'))
        } },
 
+
+    # ============================ NEW v0.9: CPU PERFORMANCE ============================
+    @{ Id = 'cpu-epp-maxperf'; Category = 'cpu'; Group = 'Processor response'; Name = 'CPU energy preference: Maximum performance'; Risk = 'Medium'; Recommended = $false
+       Guard = { Test-PowerCfgSettingAvailable 'SUB_PROCESSOR' 'PERFEPP' }
+       Desc = 'Sets the active power plan AC processor Energy Performance Preference (EPP) to 0, which tells modern CPPC/HWP-capable CPUs to favor performance instead of efficiency. This can make boost response more aggressive, but increases idle/low-load power and heat. Plugged-in setting only; battery behavior is left untouched.'
+       Apply = { Set-ActivePowerCfgAcValue 'SUB_PROCESSOR' 'PERFEPP' 0 }
+       Undo = { param($D) Restore-PowerCfgAcValue $D }
+       Test = { Test-PowerCfgAcValue 'SUB_PROCESSOR' 'PERFEPP' 0 } },
+
+    @{ Id = 'cpu-minstate-100-ac'; Category = 'cpu'; Group = 'Processor response'; Name = 'Minimum processor state: 100% (AC)'; Risk = 'Medium'; Recommended = $false
+       Guard = { Test-PowerCfgSettingAvailable 'SUB_PROCESSOR' 'PROCTHROTTLEMIN' }
+       Desc = 'Sets the active power plan minimum processor performance state to 100% while plugged in. It reduces frequency down-clocking requested by the Windows power plan and can improve consistency on some CPU-bound workloads, but usually raises idle temperature and power use. This does not overclock the CPU.'
+       Apply = { Set-ActivePowerCfgAcValue 'SUB_PROCESSOR' 'PROCTHROTTLEMIN' 100 }
+       Undo = { param($D) Restore-PowerCfgAcValue $D }
+       Test = { Test-PowerCfgAcValue 'SUB_PROCESSOR' 'PROCTHROTTLEMIN' 100 } },
+
+    @{ Id = 'cpu-maxstate-100-ac'; IsLaptopSafe = $true; Category = 'cpu'; Group = 'Processor response'; Name = 'Maximum processor state: 100% (AC)'; Risk = 'Low'; Recommended = $false
+       Guard = { Test-PowerCfgSettingAvailable 'SUB_PROCESSOR' 'PROCTHROTTLEMAX' }
+       Desc = 'Makes sure the active power plan is not capping the CPU below its full performance state while plugged in. This is normally already 100%, but some battery-saving or custom plans lower it. It does not raise clocks beyond the CPU firmware limits.'
+       Apply = { Set-ActivePowerCfgAcValue 'SUB_PROCESSOR' 'PROCTHROTTLEMAX' 100 }
+       Undo = { param($D) Restore-PowerCfgAcValue $D }
+       Test = { Test-PowerCfgAcValue 'SUB_PROCESSOR' 'PROCTHROTTLEMAX' 100 } },
+
+    @{ Id = 'cpu-boostmode-aggressive'; Category = 'cpu'; Group = 'Processor boost'; Name = 'Processor boost mode: Aggressive'; Risk = 'Medium'; Recommended = $false
+       Guard = { Test-PowerCfgSettingAvailable 'SUB_PROCESSOR' 'PERFBOOSTMODE' }
+       Desc = 'Sets Windows Processor Performance Boost Mode to Aggressive (index 2) on AC power. On supported non-autonomous CPPC/P-state systems this asks for stronger boost behavior; on some autonomous CPPC systems the hardware may treat it the same as normal boost. More boost can mean more heat and fan noise.'
+       Apply = { Set-ActivePowerCfgAcValue 'SUB_PROCESSOR' 'PERFBOOSTMODE' 2 }
+       Undo = { param($D) Restore-PowerCfgAcValue $D }
+       Test = { Test-PowerCfgAcValue 'SUB_PROCESSOR' 'PERFBOOSTMODE' 2 } },
+
+    @{ Id = 'cpu-autonomous-window-fast'; Category = 'cpu'; Group = 'Processor response'; Name = 'CPPC autonomous activity window: Fast response'; Risk = 'Medium'; Recommended = $false
+       Guard = { Test-PowerCfgSettingAvailable 'SUB_PROCESSOR' 'PERFAUTONOMOUSWINDOW' }
+       Desc = 'Sets the CPPC autonomous activity window to 0 microseconds on AC power. Windows documents longer windows as making the platform less sensitive to short CPU-load spikes, so this uses the shortest value for maximum responsiveness. Only affects CPUs/platforms that support CPPC v2 autonomous mode; unsupported systems ignore or hide it.'
+       Apply = { Set-ActivePowerCfgAcValue 'SUB_PROCESSOR' 'PERFAUTONOMOUSWINDOW' 0 }
+       Undo = { param($D) Restore-PowerCfgAcValue $D }
+       Test = { Test-PowerCfgAcValue 'SUB_PROCESSOR' 'PERFAUTONOMOUSWINDOW' 0 } },
+
     # ================================ GPU OPTIMIZATIONS ================================
+
+    # ============================ NEW v0.9: GPU PERFORMANCE ============================
+    @{ Id = 'gpu-minecraft-highperf'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'Per-game GPU preference'; Name = 'Minecraft / Lunar: use the high-performance GPU'; Risk = 'Low'; Recommended = $false
+       Guard = { (@(Get-MinecraftJavaExecutables).Count -gt 0) }
+       Desc = 'Sets detected Minecraft Java runtimes, including common Minecraft Launcher and Lunar Client runtimes, to High performance in Windows Graphics preferences. This is useful on systems with both integrated and dedicated graphics; on a single-GPU desktop it is usually a no-op.'
+       Apply = { Set-HighPerformanceGpuPreference (Get-MinecraftJavaExecutables) }
+       Undo = { param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
+       Test = { Test-HighPerformanceGpuPreference (Get-MinecraftJavaExecutables) } },
+
+    @{ Id = 'gpu-autohdr-off'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'Graphics features'; Name = 'Disable Auto HDR for games'; Risk = 'Low'; Recommended = $false
+       Desc = 'Turns off Windows Auto HDR in the DirectX global graphics settings while preserving the other values in that setting. This can remove HDR conversion work and avoid HDR-related presentation issues if you do not use Auto HDR. It is not a guaranteed FPS increase.'
+       Apply = {
+           $path = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+           $name = 'DirectXUserGlobalSettings'
+           $snap = Get-RegSnapshot $path $name
+           $cur = ''; if ($snap.Existed) { $cur = [string]$snap.Value }
+           if ($cur -match 'AutoHDREnable=\d;') { $new = $cur -replace 'AutoHDREnable=\d;', 'AutoHDREnable=0;' }
+           else { $new = $cur + 'AutoHDREnable=0;' }
+           Set-RegValue -Path $path -Name $name -Type 'String' -Value $new
+           return @{ Saved = @($snap) }
+       }
+       Undo = { param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
+       Test = {
+           $s = Get-RegSnapshot 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' 'DirectXUserGlobalSettings'
+           return [bool]($s.Existed -and ([string]$s.Value) -match 'AutoHDREnable=0;')
+       } },
+
+    @{ Id = 'gpu-mpo-off'; Category = 'gpu'; Group = 'Stutter troubleshooting'; Name = 'Disable Multi-Plane Overlay (MPO)'; Risk = 'Medium'; Recommended = $false; Unproven = $true
+       Desc = 'Applies the NVIDIA-documented Windows MPO workaround (OverlayTestMode=5). It can fix flicker, black-screen or presentation stutter on affected systems, but MPO normally exists to improve composition performance and latency, so do not treat this as a universal FPS boost. Restart required; Undo removes/restores the exact previous registry value.'
+       Restart = 'restart'
+       Registry = @( (New-RegEntry 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'OverlayTestMode' 'DWord' 5) ) },
+
+    @{ Id = 'nv-frameview-off'; Category = 'vendor'; Group = 'NVIDIA debloat'; Name = 'Disable NVIDIA FrameView SDK service'; Risk = 'Low'; Recommended = $false
+       Guard = { (Test-HasGpuVendor 'NVIDIA') -and [bool](Get-Service -Name 'FvSvc' -ErrorAction SilentlyContinue) }
+       Desc = 'Disables the NVIDIA FrameView SDK service when it is installed. The service supports performance/telemetry overlays and is not the display driver itself. This only removes a small background process; if you use FrameView or an overlay that depends on it, leave this off.'
+       Services = @( @{ Name = 'FvSvc'; Mode = 'Disabled' } ) },
+
     @{ Id = 'game-mode'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'Game features'; Name = 'Enable Game Mode'; Risk = 'Low'; Recommended = $true
        Desc = 'Tells Windows to prioritise the game you are playing and hold back background updates and driver installs while it runs. Results vary, but the default is on and it is safe.'
        Registry = @(
