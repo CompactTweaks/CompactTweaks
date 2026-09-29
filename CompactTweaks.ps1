@@ -14,7 +14,7 @@
     Keep this file ASCII-only so Windows PowerShell 5.1 reads it correctly.
 #>
 
-$script:Version = '0.6.0'
+$script:Version = '0.7.0'
 $script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1'
 
 # ----------------------------------------------------------------------------
@@ -1514,7 +1514,7 @@ $script:Tweaks = @(
        Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'GlobalTimerResolutionRequests' 'DWord' 1) ) },
 
     @{ Id = 'mmcss'; Category = 'cpu'; Group = 'Little or no effect'; Name = 'Optimize MMCSS (multimedia scheduler)'; Risk = 'Low'; Recommended = $false; Unproven = $true
-       Desc = 'Sets SystemResponsiveness = 10 and raises the Games scheduling class. Microsoft documents GPU Priority and SFIO Priority as unused by modern schedulers, values below 10 are clamped, and Fortnite does not register with this scheduler at all, so expect no change. Included because you asked; fully reversible.'
+       Desc = 'Sets SystemResponsiveness = 10 and raises the Games scheduling class. Microsoft documents GPU Priority and SFIO Priority as unused by modern schedulers, values below 10 are clamped, and Fortnite does not register with this scheduler at all, so expect no change. Fully reversible.'
        Restart = 'restart'
        Registry = @(
            (New-RegEntry $mm 'SystemResponsiveness' 'DWord' 10),
@@ -1536,7 +1536,7 @@ $script:Tweaks = @(
        Registry = @( (New-RegEntry $memMgmt 'DisablePagingExecutive' 'DWord' 1) ) },
 
     @{ Id = 'mitigations'; Category = 'cpu'; Group = 'Security trade-offs'; Name = 'Turn off CPU vulnerability mitigations (Spectre / Meltdown)'; Risk = 'High'; Recommended = $false
-       Desc = 'Uses a Microsoft documented switch (FeatureSettingsOverride) to turn off the Spectre variant 2 and Meltdown workarounds. The measured gain is roughly zero on modern CPUs, the security loss is real, and some anti-cheats refuse to run with it off. I included it because you asked, but my recommendation is to skip it. It does NOT touch DEP, ASLR or Exploit Protection.'
+       Desc = 'Uses a Microsoft documented switch (FeatureSettingsOverride) to turn off the Spectre variant 2 and Meltdown workarounds. The measured gain is roughly zero on modern CPUs, the security loss is real, and some anti-cheats refuse to run with it off. Most people should leave this off (the default). It does NOT touch DEP, ASLR or Exploit Protection.'
        Restart = 'restart'
        Registry = @(
            (New-RegEntry $memMgmt 'FeatureSettingsOverride' 'DWord' 3),
@@ -1931,7 +1931,7 @@ $script:Tweaks = @(
        Registry = @( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 'DWord' 0) ) },
 
     @{ Id = 'net-throttle'; Category = 'net'; Group = 'Little or no effect'; Name = 'Remove network throttling and limits'; Risk = 'Low'; Recommended = $false; Unproven = $true
-       Desc = 'Possibly slightly worse than leaving it alone. Sets NetworkThrottlingIndex to off and removes the QoS reserved-bandwidth limit. The throttle only limits non-multimedia traffic far above what a game sends, and independent testing has found network driver latency going up when it is removed. Included because you asked; fully reversible.'
+       Desc = 'Possibly slightly worse than leaving it alone. Sets NetworkThrottlingIndex to off and removes the QoS reserved-bandwidth limit. The throttle only limits non-multimedia traffic far above what a game sends, and independent testing has found network driver latency going up when it is removed. Fully reversible.'
        Restart = 'restart'
        Registry = @(
            (New-RegEntry $mm 'NetworkThrottlingIndex' 'DWord' -1),
@@ -1977,7 +1977,7 @@ $script:Tweaks = @(
 
     @{ Id = 'nvcp-best'; Category = 'vendor'; Group = 'NVIDIA settings'; Name = 'Best Nvidia Control Panel Settings (guided)'; Risk = 'Low'; Recommended = $false; OneShot = $true
        Guard = { Test-HasGpuVendor 'NVIDIA' }
-       Desc = 'Guided for now: opens the NVIDIA Control Panel so you can set the values listed further down this page. Changing these driver profile settings automatically needs NVIDIA setting ids that I could not verify without a test PC, and I did not want to guess and write wrong values into your driver.'
+       Desc = 'Guided for now: opens the NVIDIA Control Panel so you can set the values listed further down this page. Changing these driver profile settings automatically needs NVIDIA setting ids that have not been verified across every driver version, so this stays guided rather than risk writing the wrong value into your driver.'
        Apply = {
            $opened = $false
            foreach ($opener in @({ Start-Process 'shell:AppsFolder\NVIDIACorp.NVIDIAControlPanel_56jybvy8sckqj!NVIDIACorp.NVIDIAControlPanel' }, { Start-Process (Join-Path $env:ProgramFiles 'NVIDIA Corporation\Control Panel Client\nvcplui.exe') })) {
@@ -2228,7 +2228,7 @@ $script:Tweaks = @(
        } },
 
     @{ Id = 'sehop-off'; Category = 'cpu'; Group = 'Security trade-offs'; Name = 'Disable SEHOP'; Risk = 'High'; Recommended = $false
-       Desc = 'Turns off Structured Exception Handling Overwrite Protection, a Microsoft-documented exploit mitigation, separate from the Spectre/Meltdown tweak above. Essentially no measurable performance gain on modern CPUs, so this is included for completeness rather than because I recommend it.'
+       Desc = 'Turns off Structured Exception Handling Overwrite Protection, a Microsoft-documented exploit mitigation, separate from the Spectre/Meltdown tweak above. Essentially no measurable performance gain on modern CPUs, so it is here for completeness rather than as a recommendation.'
        Restart = 'restart'
        Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'DisableExceptionChainValidation' 'DWord' 1) ) },
 
@@ -2686,7 +2686,7 @@ $script:Tweaks = @(
 
     # ============================ NEW v0.6: WINDOWS TWEAKS ============================
     @{ Id = 'cloud-sync-off'; Category = 'windows'; Group = 'Cloud and sync'; Name = 'Turn off Windows settings sync'; Risk = 'Low'; Recommended = $false
-       Desc = 'Stops Windows syncing your settings (theme, passwords, language, and so on) to your Microsoft account across devices. Purely a background service, no effect on FPS, included because you asked for it.'
+       Desc = 'Stops Windows syncing your settings (theme, passwords, language, and so on) to your Microsoft account across devices. Purely a background service, no effect on FPS.'
        Registry = @( (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\SettingSync' 'DisableSettingSync' 'DWord' 2) ) },
 
     @{ Id = 'experimentation-lock'; Category = 'windows'; Group = 'System settings'; Name = 'Lock Windows experimentation features off'; Risk = 'Low'; Recommended = $true
@@ -2739,7 +2739,7 @@ $script:Tweaks = @(
        } },
 
     @{ Id = 'windows-update-defer'; Category = 'windows'; Group = 'System settings'; Name = 'Defer Windows feature and quality updates'; Risk = 'Medium'; Recommended = $false
-       Desc = 'Delays new Windows feature updates by up to a year and quality (security) updates by a few days, so a fresh, occasionally buggy update does not land on your PC the moment it ships. This defers updates, it does NOT turn off Windows Update entirely: security patches still arrive, just a little later. I chose the safer, deferred version over fully disabling updates.'
+       Desc = 'Delays new Windows feature updates by up to a year and quality (security) updates by a few days, so a fresh, occasionally buggy update does not land on your PC the moment it ships. This defers updates, it does NOT turn off Windows Update entirely: security patches still arrive, just a little later. Deferring is the safer choice; fully disabling Windows Update is not offered here.'
        Registry = @(
            (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate' 'DeferFeatureUpdatesPeriodInDays' 'DWord' 180),
            (New-RegEntry 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate' 'DeferQualityUpdatesPeriodInDays' 'DWord' 4)
@@ -2926,7 +2926,44 @@ $script:Tweaks = @(
        Undo = { param($D) & fsutil.exe behavior set disabledeletenotify ([int]$D.Prev) | Out-Null }
        Test = {
            $out = (& fsutil.exe behavior query disabledeletenotify 2>&1 | Out-String)
-           return [bool]($out -match '=\\s*0')
+           return [bool]($out -match '=\\s*0',
+    @{ Id = 'tcp-rsc-off'; Category = 'net'; Group = 'TCP stack'; Name = 'Disable Receive Segment Coalescing (RSC)'; Risk = 'Low'; Recommended = $false
+       Desc = 'RSC merges several incoming TCP segments into one before handing them to the CPU, which helps throughput but can add a small delay. Turning it off processes packets as they arrive instead of batching them, trading a little throughput for steadier timing. Global setting; applies system-wide.'
+       Apply = {
+           $prev = 'enabled'
+           $out = (& netsh.exe int tcp show global | Out-String)
+           $m = [regex]::Match($out, '(?im)^Receive Segment Coalescing State\s*:\s*(\S+)')
+           if ($m.Success) { $prev = $m.Groups[1].Value }
+           & netsh.exe int tcp set global rsc=disabled | Out-Null
+           return @{ Prev = $prev }
+       }
+       Undo = { param($D) & netsh.exe int tcp set global rsc=([string]$D.Prev) | Out-Null }
+       Test = {
+           $out = (& netsh.exe int tcp show global | Out-String)
+           return [bool]($out -match '(?im)^Receive Segment Coalescing State\s*:\s*disabled')
+       } },
+
+    @{ Id = 'tcp-chimney-off'; Category = 'net'; Group = 'TCP stack'; Name = 'Disable TCP Chimney Offload'; Risk = 'Low'; Recommended = $false
+       Desc = 'An older offload feature that hands entire TCP connections to the network card. Windows 10/11 mostly ignore it already on modern hardware, so this is usually a no-op, but it is a common item in gaming tweak lists so it is included for completeness.'
+       Apply = { & netsh.exe int tcp set global chimney=disabled | Out-Null }
+       Undo = { & netsh.exe int tcp set global chimney=automatic | Out-Null }
+       Test = {
+           $out = (& netsh.exe int tcp show global | Out-String)
+           return [bool]($out -match '(?im)^Chimney Offload State\s*:\s*disabled')
+       } },
+
+    @{ Id = 'nv-crashreport-tasks-off'; Category = 'vendor'; Group = 'NVIDIA debloat'; Name = 'Disable NVIDIA crash-report scheduled tasks'; Risk = 'Low'; Recommended = $false
+       Guard = { Test-HasGpuVendor 'NVIDIA' }
+       Desc = 'Turns off the NvTmRep_CrashReport scheduled tasks GeForce Experience creates to send crash reports to NVIDIA in the background. No effect on the driver or your games; only stops that reporting.'
+       Apply = {
+           $found = @(Get-ScheduledTask -TaskName 'NvTmRep_CrashReport*' -ErrorAction SilentlyContinue | ForEach-Object { $_.TaskPath.TrimEnd('\') + '\' + $_.TaskName })
+           if ($found.Count -eq 0) { throw 'No NVIDIA crash-report tasks were found on this PC.' }
+           $touched = Disable-ScheduledTaskList $found
+           return @{ Tasks = $touched }
+       }
+       Undo = { param($D) Enable-ScheduledTaskList @($D.Tasks) }
+       Test = { return $script:State.ContainsKey('nv-crashreport-tasks-off') } }
+)
        } }
 )
 
@@ -3228,7 +3265,7 @@ $script:BiosSections = @(
 
 $script:TabDefs = @(
     @{ Id = 'home';    Label = 'Home';                 Icon = 'home' },
-    @{ Id = 'oc';      Label = 'OC';                   Sub = 'Overclocking'; Icon = 'oc'; Title = 'Overclocking'; Desc = 'Step-by-step, safe overclocking for your CPU, GPU and RAM.'; Sections = $script:OcSections; Note = 'These are general guides, not guarantees. Check your own CPU, GPU and RAM maker for exact limits, and stop the moment anything looks unstable or too hot.' },
+    @{ Id = 'oc';      Label = 'OC';                   Sub = 'Overclocking'; Icon = 'oc'; Title = 'Overclocking'; Desc = 'Coming soon.'; ComingSoon = $true },
     @{ Id = 'gpu';     Label = 'GPU Optimizations';    Icon = 'gpu';     Title = 'GPU Optimizations';     Desc = 'Game capture, GPU scheduling, DirectX and fullscreen behaviour.' },
     @{ Id = 'cpu';     Label = 'CPU Optimizations';    Icon = 'cpu';     Title = 'CPU Optimizations';     Desc = 'Power, priority, background processes, kernel and security trade-offs.' },
     @{ Id = 'kbm';     Label = 'KBM Optimizations';    Icon = 'kbm';     Title = 'Keyboard and mouse';    Desc = 'Input behaviour, USB power saving and polling rate.' },
@@ -3436,9 +3473,9 @@ $xaml = @'
   <Grid>
     <Grid.Background>
       <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="#A50F1B" Offset="0"/>
-        <GradientStop Color="#6A0A13" Offset="0.36"/>
-        <GradientStop Color="#33070D" Offset="0.68"/>
+        <GradientStop Color="#7E0C16" Offset="0"/>
+        <GradientStop Color="#4C0810" Offset="0.36"/>
+        <GradientStop Color="#22050A" Offset="0.68"/>
         <GradientStop Color="#0B0304" Offset="1"/>
       </LinearGradientBrush>
     </Grid.Background>
@@ -3471,8 +3508,53 @@ $xaml = @'
       </Grid.ColumnDefinitions>
 
       <!-- Sidebar -->
-      <Border Grid.Column="0" Background="#E8000000" BorderBrush="#26FFFFFF" BorderThickness="0,0,1,0">
+      <Border Grid.Column="0" Background="Black" BorderBrush="#26FFFFFF" BorderThickness="0,0,1,0" ClipToBounds="True">
         <Grid>
+          <Canvas Width="268" Height="900" ClipToBounds="True">
+            <Canvas.Effect>
+              <BlurEffect Radius="55" KernelType="Gaussian"/>
+            </Canvas.Effect>
+            <Ellipse Canvas.Left="-90" Canvas.Top="-60" Width="360" Height="360">
+              <Ellipse.Fill>
+                <RadialGradientBrush>
+                  <GradientStop Color="#B3160000" Offset="0"/>
+                  <GradientStop Color="#00160000" Offset="1"/>
+                </RadialGradientBrush>
+              </Ellipse.Fill>
+            </Ellipse>
+            <Ellipse Canvas.Left="60" Canvas.Top="120" Width="300" Height="420">
+              <Ellipse.Fill>
+                <RadialGradientBrush>
+                  <GradientStop Color="#99CC1122" Offset="0"/>
+                  <GradientStop Color="#00CC1122" Offset="1"/>
+                </RadialGradientBrush>
+              </Ellipse.Fill>
+            </Ellipse>
+            <Ellipse Canvas.Left="-120" Canvas.Top="380" Width="320" Height="320">
+              <Ellipse.Fill>
+                <RadialGradientBrush>
+                  <GradientStop Color="#8A8A0F16" Offset="0"/>
+                  <GradientStop Color="#008A0F16" Offset="1"/>
+                </RadialGradientBrush>
+              </Ellipse.Fill>
+            </Ellipse>
+            <Ellipse Canvas.Left="30" Canvas.Top="560" Width="280" Height="380">
+              <Ellipse.Fill>
+                <RadialGradientBrush>
+                  <GradientStop Color="#80A5121E" Offset="0"/>
+                  <GradientStop Color="#00A5121E" Offset="1"/>
+                </RadialGradientBrush>
+              </Ellipse.Fill>
+            </Ellipse>
+            <Ellipse Canvas.Left="-60" Canvas.Top="760" Width="340" Height="300">
+              <Ellipse.Fill>
+                <RadialGradientBrush>
+                  <GradientStop Color="#736D0A10" Offset="0"/>
+                  <GradientStop Color="#006D0A10" Offset="1"/>
+                </RadialGradientBrush>
+              </Ellipse.Fill>
+            </Ellipse>
+          </Canvas>
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -3510,6 +3592,13 @@ $xaml = @'
 
       <!-- Main area -->
       <Grid Grid.Column="1">
+        <Grid.Background>
+          <LinearGradientBrush StartPoint="0,0" EndPoint="0.6,1">
+            <GradientStop Color="#4C0810" Offset="0"/>
+            <GradientStop Color="#2A060C" Offset="0.5"/>
+            <GradientStop Color="#0B0304" Offset="1"/>
+          </LinearGradientBrush>
+        </Grid.Background>
         <Grid.RowDefinitions>
           <RowDefinition Height="*"/>
           <RowDefinition Height="Auto"/>
@@ -3536,6 +3625,7 @@ $xaml = @'
               <TextBlock x:Name="SysLine" Margin="0,16,0,0" Foreground="{StaticResource Muted}" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap"/>
               <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
                 <Button x:Name="BtnHomeRestore" Style="{StaticResource PrimaryButton}" Content="Create restore point" Margin="0,0,10,0"/>
+                <Button x:Name="BtnHomeApplyAll" Style="{StaticResource GhostButton}" Content="Apply All" Margin="0,0,10,0"/>
                 <Button x:Name="BtnHomeBrowse" Style="{StaticResource GhostButton}" Content="Browse tweaks"/>
               </StackPanel>
               <Border Margin="0,16,0,0" Padding="16,12,16,12" CornerRadius="14" Background="#33000000" BorderBrush="#55FFFFFF" BorderThickness="1" HorizontalAlignment="Left" MaxWidth="720">
@@ -3742,6 +3832,28 @@ $xaml = @'
         </Border>
       </Grid>
     </Grid>
+
+    <Border x:Name="Splash" Background="#0B0304" Panel.ZIndex="999">
+      <Border.Effect>
+        <DropShadowEffect BlurRadius="0" Opacity="0"/>
+      </Border.Effect>
+      <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+        <Border x:Name="SplashMark" Width="78" Height="78" CornerRadius="24" Background="White" HorizontalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+          <Border.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Border.RenderTransform>
+          <Viewbox Width="38" Height="38">
+            <Canvas Width="24" Height="24"><Path Data="M13,2 L4,14 H10 L9,22 L18,10 H12 Z" Fill="#A10D18"/></Canvas>
+          </Viewbox>
+        </Border>
+        <TextBlock Text="Compact Tweaks" FontSize="24" FontWeight="ExtraBold" Foreground="White" HorizontalAlignment="Center" Margin="0,18,0,0"/>
+        <Grid Width="34" Height="34" Margin="0,20,0,0" HorizontalAlignment="Center">
+          <Ellipse Width="34" Height="34" Stroke="#33FFFFFF" StrokeThickness="3"/>
+          <Ellipse x:Name="SplashRing" Width="34" Height="34" Stroke="White" StrokeThickness="3" StrokeStartLineCap="Round" StrokeDashArray="22 100" RenderTransformOrigin="0.5,0.5">
+            <Ellipse.RenderTransform><RotateTransform Angle="0"/></Ellipse.RenderTransform>
+          </Ellipse>
+        </Grid>
+        <TextBlock x:Name="SplashText" Text="Loading..." FontSize="13" FontWeight="SemiBold" Foreground="#B3FFFFFF" HorizontalAlignment="Center" Margin="0,12,0,0"/>
+      </StackPanel>
+    </Border>
   </Grid>
 </Window>
 '@
@@ -3749,12 +3861,12 @@ $xaml = @'
 $script:Window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$xaml)))
 $uiNames = @(
     'VersionText', 'NavPill', 'NavList', 'SideNote', 'PageHost', 'HomePage', 'HeroMark', 'TitleLetters', 'Slogan', 'SysLine',
-    'BtnHomeRestore', 'BtnHomeBrowse', 'TileCpu', 'IconCpu', 'CpuName', 'CpuVal', 'CpuSpeed', 'CpuProc', 'CpuLogical', 'CpuUp',
+    'BtnHomeRestore', 'BtnHomeApplyAll', 'BtnHomeBrowse', 'TileCpu', 'IconCpu', 'CpuName', 'CpuVal', 'CpuSpeed', 'CpuProc', 'CpuLogical', 'CpuUp',
     'CpuSpark', 'ThreadBars', 'TileMem', 'IconMem', 'MemTotal', 'MemVal', 'MemSub', 'MemBar', 'MemUsedText', 'MemFreeText',
     'TileGpu', 'IconGpu', 'GpuName', 'GpuRing', 'GpuVal', 'GpuVram', 'GpuEngine', 'TileDisk', 'IconDisk', 'DiskVal', 'DiskSpark',
     'DiskReadBar', 'DiskRead', 'DiskWriteBar', 'DiskWrite', 'TileNet', 'IconNet', 'NetName', 'NetDown', 'NetUp', 'NetSpark',
     'ChipApplied', 'MonitorNote', 'Toast', 'ToastText', 'LogPanel', 'LogBox', 'Bar', 'CountText', 'ChkRestore',
-    'BtnLog', 'BtnRec', 'BtnClear', 'BtnUndo', 'BtnApply', 'GlowA', 'GlowB'
+    'BtnLog', 'BtnRec', 'BtnClear', 'BtnUndo', 'BtnApply', 'GlowA', 'GlowB', 'Splash', 'SplashMark', 'SplashRing', 'SplashText'
 )
 foreach ($n in $uiNames) { $script:Ui[$n] = $script:Window.FindName($n) }
 
@@ -3800,7 +3912,7 @@ function New-Icon {
     $p = New-Object System.Windows.Shapes.Path
     $p.Data = $script:Icons[$Name]
     $p.Stroke = New-Brush $Color
-    $p.StrokeThickness = 1.9
+    $p.StrokeThickness = 1.3
     $p.StrokeLineJoin = [System.Windows.Media.PenLineJoin]::Round
     $p.StrokeStartLineCap = [System.Windows.Media.PenLineCap]::Round
     $p.StrokeEndLineCap = [System.Windows.Media.PenLineCap]::Round
@@ -4469,6 +4581,12 @@ function New-TabPage {
         return $shell.Scroll
     }
 
+    if ($Tab.ComingSoon) {
+        $script:TabHasRows[$Tab.Id] = $false
+        [void]$stack.Children.Add((New-EmptyState $Tab 'Overclocking is being redesigned so it does not use a checklist. Check back in a future update.'))
+        return $shell.Scroll
+    }
+
     if ($Tab.Id -eq 'laptop') {
         $script:TabHasRows[$Tab.Id] = $false
         $safe = @($script:Tweaks | Where-Object { $_.IsLaptopSafe -eq $true })
@@ -4571,8 +4689,8 @@ function Show-Page {
     $y = [double]($script:NavIndex[$Id] * 46)
     $script:Ui.NavPill.RenderTransform.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, (New-Anim -To $y -Ms 460 -Ease 'Back'))
 
-    if ($script:TabHasRows.ContainsKey($Id) -and $script:TabHasRows[$Id]) { $script:Ui.Bar.Visibility = [System.Windows.Visibility]::Visible }
-    else { $script:Ui.Bar.Visibility = [System.Windows.Visibility]::Collapsed }
+    if ($Id -eq 'discord') { $script:Ui.Bar.Visibility = [System.Windows.Visibility]::Collapsed }
+    else { $script:Ui.Bar.Visibility = [System.Windows.Visibility]::Visible }
     Update-Count
 }
 
@@ -5036,6 +5154,20 @@ $script:Ui.BtnHomeBrowse.Add_Click({
     $choices = @($script:TabDefs | Where-Object { $_.Id -ne 'home' } | ForEach-Object { $_.Id })
     if ($choices.Count -gt 0) { Show-Page ($choices | Get-Random) }
 })
+$script:Ui.BtnHomeApplyAll.Add_Click({
+    if (Get-IsLaptop) {
+        [void][System.Windows.MessageBox]::Show('This PC is a laptop. To keep battery life and heat reasonable, Apply All only runs on desktops. The tweaks picked and checked as safe for a laptop are on the Laptop Optimizations tab; open it and apply from there.', 'Compact Tweaks', 'OK', 'Information')
+        Show-Page 'laptop'
+        return
+    }
+    $eligible = @($script:Tweaks | Where-Object { -not $_.OneShot -and $_.Risk -ne 'High' -and $_.Category -ne 'oc' })
+    if ($eligible.Count -eq 0) { Show-Toast 'Nothing eligible to apply.'; return }
+    foreach ($t in $script:Tweaks) { $r = $script:Rows[$t.Id]; if ($r) { $r.Check.IsChecked = $false } }
+    foreach ($t in $eligible) { $r = $script:Rows[$t.Id]; if ($r) { $r.Check.IsChecked = $true } }
+    Update-Count
+    Write-Log ('Apply All selected {0} automatic, reversible tweak(s). High-risk security trade-offs and one-time actions were left out on purpose.' -f $eligible.Count)
+    Invoke-Batch -Mode 'Apply'
+})
 $script:Ui.BtnRec.Add_Click({
     foreach ($t in $script:Tweaks) {
         $r = $script:Rows[$t.Id]
@@ -5069,64 +5201,82 @@ $script:Window.Add_SourceInitialized({
     } catch { }
 })
 
-Build-Nav
-Build-Pages
-Update-Statuses
-Initialize-Monitor
+$script:Ui.Bar.Visibility = [System.Windows.Visibility]::Collapsed
+$script:Started = $false
 
-# Slow ambient glow in the background.
-foreach ($glow in @($script:Ui.GlowA, $script:Ui.GlowB)) {
-    $ax = New-Anim -To 70 -Ms 24000 -Ease 'None'
-    $ax.AutoReverse = $true
-    $ax.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
-    $ay = New-Anim -To 40 -Ms 31000 -Ease 'None'
-    $ay.AutoReverse = $true
-    $ay.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
-    $glow.RenderTransform.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $ax)
-    $glow.RenderTransform.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $ay)
+# Spin the splash ring right away; this costs almost nothing and the window paints it immediately.
+$spin = New-Object System.Windows.Media.Animation.DoubleAnimation
+$spin.From = 0; $spin.To = 360; $spin.Duration = [TimeSpan]::FromMilliseconds(900)
+$spin.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+$script:Ui.SplashRing.RenderTransform.BeginAnimation([System.Windows.Media.RotateTransform]::AngleProperty, $spin)
+
+function Hide-Splash {
+    $fade = New-Anim -To 0 -Ms 380 -Ease 'None'
+    $fade.Add_Completed({ $script:Ui.Splash.Visibility = [System.Windows.Visibility]::Collapsed })
+    $script:Ui.Splash.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fade)
 }
 
-$script:MonTimer = New-Object System.Windows.Threading.DispatcherTimer
-$script:MonTimer.Interval = [TimeSpan]::FromMilliseconds(1000)
-$script:MonTimer.Add_Tick({
-    try { Invoke-MonitorTick } catch { if (-not $script:Mon.Err) { $script:Mon.Err = $true; Write-Log ('Monitor: ' + $_.Exception.Message) 'Warn' } }
-})
-$script:NumTimer = New-Object System.Windows.Threading.DispatcherTimer
-$script:NumTimer.Interval = [TimeSpan]::FromMilliseconds(100)
-$script:NumTimer.Add_Tick({
-    try { Update-MonitorNumbers } catch { if (-not $script:Mon.Err) { $script:Mon.Err = $true; Write-Log ('Monitor: ' + $_.Exception.Message) 'Warn' } }
-})
-$script:Window.Add_Closing({
-    try {
-        $script:MonTimer.Stop(); $script:NumTimer.Stop()
-        if ($script:Mon.Q) { $script:Mon.Q.Dispose() }
-    } catch { }
-})
+function Initialize-CompactTweaksApp {
+    # Runs after the window (with the splash on top of it) has already painted, so the app feels
+    # like it opens immediately instead of sitting blank while all of this builds.
+    Build-Nav
+    Build-Pages
+    Update-Statuses
+    Initialize-Monitor
 
-# Show Home last so the entrance animation plays on a fully built window.
+    foreach ($glow in @($script:Ui.GlowA, $script:Ui.GlowB)) {
+        $ax = New-Anim -To 70 -Ms 24000 -Ease 'None'
+        $ax.AutoReverse = $true
+        $ax.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+        $ay = New-Anim -To 40 -Ms 31000 -Ease 'None'
+        $ay.AutoReverse = $true
+        $ay.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+        $glow.RenderTransform.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $ax)
+        $glow.RenderTransform.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $ay)
+    }
+
+    $script:MonTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:MonTimer.Interval = [TimeSpan]::FromMilliseconds(1000)
+    $script:MonTimer.Add_Tick({
+        try { Invoke-MonitorTick } catch { if (-not $script:Mon.Err) { $script:Mon.Err = $true; Write-Log ('Monitor: ' + $_.Exception.Message) 'Warn' } }
+    })
+    $script:NumTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:NumTimer.Interval = [TimeSpan]::FromMilliseconds(100)
+    $script:NumTimer.Add_Tick({
+        try { Update-MonitorNumbers } catch { if (-not $script:Mon.Err) { $script:Mon.Err = $true; Write-Log ('Monitor: ' + $_.Exception.Message) 'Warn' } }
+    })
+    $script:Window.Add_Closing({
+        try {
+            $script:MonTimer.Stop(); $script:NumTimer.Stop()
+            if ($script:Mon.Q) { $script:Mon.Q.Dispose() }
+        } catch { }
+    })
+
+    Show-Page 'home'
+    Start-HomeEntrance
+    $script:MonTimer.Start()
+    $script:NumTimer.Start()
+    Hide-Splash
+
+    Write-Log ("Compact Tweaks v{0} ready. Undo data and log: {1}" -f $script:Version, $script:DataDir)
+    $nApplied = @($script:States.Values | Where-Object { $_ -eq 'Applied' }).Count
+    $nAlready = @($script:States.Values | Where-Object { $_ -eq 'AlreadySet' }).Count
+    Write-Log ("Status: {0} applied by Compact Tweaks earlier, {1} already set on this PC by Windows or another tool." -f $nApplied, $nAlready)
+    Write-Log ('Font in use: ' + $script:FontPick + '. For the closest match to the design, install Inter or SF Pro.')
+    if (-not $script:NativeOk) { Write-Log ('Native helper failed to compile: ' + $script:NativeError) 'Warn' }
+    try {
+        $consoleUser = (Get-CimInstance Win32_ComputerSystem).UserName
+        if ($consoleUser -and (($consoleUser -split '\\')[-1] -ne $env:USERNAME)) {
+            Write-Log ("You are signed in as {0} but running as {1}. Per-user tweaks (HKCU) would change the ADMIN account, not yours. Re-run from the account you actually use." -f $consoleUser, $env:USERNAME) 'Warn'
+        }
+    } catch { }
+}
+
 $script:Window.Add_ContentRendered({
     if (-not $script:Started) {
         $script:Started = $true
-        Show-Page 'home'
-        Start-HomeEntrance
-        $script:MonTimer.Start()
-        $script:NumTimer.Start()
+        $script:Window.Dispatcher.BeginInvoke([System.Action]{ Initialize-CompactTweaksApp }, [System.Windows.Threading.DispatcherPriority]::Background) | Out-Null
     }
 })
-$script:Started = $false
-$script:Ui.Bar.Visibility = [System.Windows.Visibility]::Collapsed
-
-Write-Log ("Compact Tweaks v{0} ready. Undo data and log: {1}" -f $script:Version, $script:DataDir)
-$nApplied = @($script:States.Values | Where-Object { $_ -eq 'Applied' }).Count
-$nAlready = @($script:States.Values | Where-Object { $_ -eq 'AlreadySet' }).Count
-Write-Log ("Status: {0} applied by Compact Tweaks earlier, {1} already set on this PC by Windows or another tool." -f $nApplied, $nAlready)
-Write-Log ('Font in use: ' + $script:FontPick + '. For the closest match to the design, install Inter or SF Pro.')
-if (-not $script:NativeOk) { Write-Log ('Native helper failed to compile: ' + $script:NativeError) 'Warn' }
-try {
-    $consoleUser = (Get-CimInstance Win32_ComputerSystem).UserName
-    if ($consoleUser -and (($consoleUser -split '\\')[-1] -ne $env:USERNAME)) {
-        Write-Log ("You are signed in as {0} but running as {1}. Per-user tweaks (HKCU) would change the ADMIN account, not yours. Re-run from the account you actually use." -f $consoleUser, $env:USERNAME) 'Warn'
-    }
-} catch { }
 
 [void]$script:Window.ShowDialog()
