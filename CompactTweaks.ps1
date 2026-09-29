@@ -3286,7 +3286,7 @@ $script:TabDefs = @(
 # ----------------------------------------------------------------------------
 # Window (XAML)
 # ----------------------------------------------------------------------------
-$script:CompactLogoBase64 = @'
+$script:CompactAppIconBase64 = @'
 iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAEAAElEQVR42pz9d7wtV13/jz/fa83scsrtublJSCWBhBAhAQKEInwMBAQFUZoUKSIgXYpKF9AP
 flSKikhvAiIWBBFCUaQFhFBDS2+k3ZvbTtt7z8x6//5Ya82smT3nht/3+rhyc84++8yeWe/2er/er7cASueP9HxRRMLXFVX/GkSY+1N/M3xfk69peHMR/zWS
 r4UfkvCbFUFV/a/Q5nqke4XhGvxrpb4GSd7T0FwSQKWK63ze7qeW5CsqIGJwTllC2QmsQf0eToRS1b8WqIBKBFffseYjqja3TcJv1vhf9eVrfc/pXHt6mRp+
@@ -4493,10 +4493,10 @@ $xaml = @'
       <!-- Main area -->
       <Grid Grid.Column="1">
         <Grid.Background>
-          <LinearGradientBrush StartPoint="0,0" EndPoint="0.70,1">
-            <GradientStop Color="#7A0710" Offset="0"/>
-            <GradientStop Color="#50060C" Offset="0.48"/>
-            <GradientStop Color="#160204" Offset="1"/>
+          <LinearGradientBrush StartPoint="0,0" EndPoint="0.65,1">
+            <GradientStop Color="#860B18" Offset="0"/>
+            <GradientStop Color="#610A14" Offset="0.48"/>
+            <GradientStop Color="#31070C" Offset="1"/>
           </LinearGradientBrush>
         </Grid.Background>
         <Grid.RowDefinitions>
@@ -5257,38 +5257,24 @@ try {
     Write-Log ('Sidebar background image failed to load: ' + $_.Exception.Message) 'Warn'
 }
 
-# Compact Tweaks logo.
-# This is intentionally created in PowerShell after XAML parsing so a logo/font
-# customization can never stop the entire window from loading.
+# App icon: supplied Compact Tweaks artwork.
+# Loaded after XAML parsing so icon failure can never prevent the UI from opening.
 try {
-    $logoBytes = [Convert]::FromBase64String(($script:CompactLogoBase64 -replace '\s',''))
-    $logoStream = New-Object System.IO.MemoryStream(,$logoBytes)
+    $iconBytes = [Convert]::FromBase64String(($script:CompactAppIconBase64 -replace '\s',''))
+    $iconStream = New-Object System.IO.MemoryStream(,$iconBytes)
     try {
-        $logoBitmap = New-Object System.Windows.Media.Imaging.BitmapImage
-        $logoBitmap.BeginInit()
-        $logoBitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
-        $logoBitmap.StreamSource = $logoStream
-        $logoBitmap.EndInit()
-        $logoBitmap.Freeze()
-
-        # Window/taskbar icon.
-        $script:Window.Icon = $logoBitmap
-
-        # Home-screen mark: replace the old lightning graphic at runtime.
-        if ($script:Ui.HeroMark) {
-            $homeLogo = New-Object System.Windows.Controls.Image
-            $homeLogo.Source = $logoBitmap
-            $homeLogo.Stretch = [System.Windows.Media.Stretch]::UniformToFill
-            $homeLogo.Width = 78
-            $homeLogo.Height = 78
-            $script:Ui.HeroMark.Background = [System.Windows.Media.Brushes]::Black
-            $script:Ui.HeroMark.Child = $homeLogo
-        }
+        $iconBitmap = New-Object System.Windows.Media.Imaging.BitmapImage
+        $iconBitmap.BeginInit()
+        $iconBitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $iconBitmap.StreamSource = $iconStream
+        $iconBitmap.EndInit()
+        $iconBitmap.Freeze()
+        $script:Window.Icon = $iconBitmap
     } finally {
-        $logoStream.Dispose()
+        $iconStream.Dispose()
     }
 } catch {
-    Write-Log ('Compact Tweaks logo failed to load: ' + $_.Exception.Message) 'Warn'
+    Write-Log ('Compact Tweaks app icon failed to load: ' + $_.Exception.Message) 'Warn'
 }
 
 # Font: SF Pro or Inter if installed, otherwise Segoe UI Variable / Segoe UI.
@@ -5301,15 +5287,6 @@ try {
 } catch { }
 $script:Window.FontFamily = New-Object System.Windows.Media.FontFamily($fontPick)
 $script:FontPick = $fontPick
-
-# Home branding typography. These properties belong to TextBlock, so they are safe here.
-try {
-    $script:Ui.Slogan.Text = 'STAY COMPACT, STAY FAST'
-    $script:Ui.Slogan.FontFamily = New-Object System.Windows.Media.FontFamily('Bahnschrift SemiCondensed')
-    $script:Ui.Slogan.FontSize = 20
-    $script:Ui.Slogan.FontWeight = [System.Windows.FontWeight]::FromOpenTypeWeight(600)
-    $script:Ui.Slogan.FontStyle = [System.Windows.FontStyles]::Italic
-} catch { }
 
 # ----------------------------------------------------------------------------
 # UI helpers
@@ -6525,7 +6502,6 @@ function Start-HomeEntrance {
         $tb = New-Object System.Windows.Controls.TextBlock
         $tb.Text = [string]$ch
         $tb.FontSize = 52
-        try { $tb.FontFamily = New-Object System.Windows.Media.FontFamily('Bahnschrift SemiCondensed') } catch { }
         $tb.FontWeight = [System.Windows.FontWeight]::FromOpenTypeWeight(900)
         $tb.Foreground = New-Brush '#FFFFFF'
         $tt = New-Object System.Windows.Media.TranslateTransform
