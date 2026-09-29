@@ -14,7 +14,7 @@
     Keep this file ASCII-only so Windows PowerShell 5.1 reads it correctly.
 #>
 
-$script:Version = '0.7.0'
+$script:Version = '0.8.0'
 $script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1'
 
 # ----------------------------------------------------------------------------
@@ -1372,6 +1372,226 @@ $cdm  = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
 $explorerAdv = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
 $classicMenuKey = 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}'
 $memMgmt = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
+
+# ----------------------------------------------------------------------------
+# v0.8 performance expansion
+# Adds granular, reversible controls instead of hiding a giant all-in-one preset.
+# The extras are intentionally NOT selected by default: several are situational and
+# can disable Windows features you may actually use. Read each description first.
+# ----------------------------------------------------------------------------
+function Get-NicAdvancedByKeyword {
+    param([string]$Keyword)
+    $out = @()
+    if (-not (Get-Command Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue)) { return $out }
+    foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+        try {
+            $p = Get-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $Keyword -AllProperties -ErrorAction Stop
+            if ($p) { $out += @($p) }
+        } catch { }
+    }
+    return $out
+}
+
+function Clear-CacheDirectorySafe {
+    param([string]$Path, [string]$Label)
+    if (-not (Test-Path -LiteralPath $Path)) { throw ($Label + ' cache was not found on this PC.') }
+    $before = 0L
+    try { $before = [int64]((Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum) } catch { }
+    Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Log ('{0}: cleared about {1} MB of cache' -f $Label, [math]::Round($before / 1MB)) 'Ok'
+}
+
+function Get-ExtraPerformanceTweaks {
+    $out = @()
+
+    # 24 registry-backed controls. Most trim UI/background work rather than promising magic FPS.
+    $reg = @(
+        @{ Id='perf-visualfx-best'; Category='windows'; Group='Visual performance'; Name='Visual effects: Best performance preset'; Risk='Medium'; Restart='sign-out'; Path='HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects'; ValueName='VisualFXSetting'; Type='DWord'; Value=2; Desc='Uses Windows built-in Best performance visual-effects preset. It can make the desktop look plainer, but it reduces animation, shadow and composition work. This is mainly useful on weaker PCs; modern gaming PCs may see no measurable FPS change.' },
+        @{ Id='perf-dragfull-off'; Category='windows'; Group='Visual performance'; Name='Do not draw full window while dragging'; Risk='Low'; Restart='sign-out'; Path='HKCU:\Control Panel\Desktop'; ValueName='DragFullWindows'; Type='String'; Value='0'; Desc='Shows only an outline while a window is being dragged. This reduces desktop redraw work during window movement; it does not change in-game rendering.' },
+        @{ Id='perf-listview-alpha-off'; Category='windows'; Group='Visual performance'; Name='Disable translucent Explorer selection rectangles'; Risk='Low'; Restart='sign-out'; Path=$explorerAdv; ValueName='ListviewAlphaSelect'; Type='DWord'; Value=0; Desc='Turns off the translucent selection rectangle in File Explorer. Tiny UI/GPU saving only; included as a granular visual-performance option.' },
+        @{ Id='perf-listview-shadow-off'; Category='windows'; Group='Visual performance'; Name='Disable icon-label shadows'; Risk='Low'; Restart='sign-out'; Path=$explorerAdv; ValueName='ListviewShadow'; Type='DWord'; Value=0; Desc='Turns off drop shadows under desktop icon labels. Cosmetic only, with a tiny reduction in desktop effects.' },
+        @{ Id='perf-peek-off'; Category='windows'; Group='Visual performance'; Name='Disable desktop Peek preview'; Risk='Low'; Restart='sign-out'; Path=$explorerAdv; ValueName='DisablePreviewDesktop'; Type='DWord'; Value=1; Desc='Stops the taskbar desktop Peek preview from rendering when you hover the far-right edge of the taskbar. No direct game FPS gain.' },
+        @{ Id='perf-icons-only'; Category='windows'; Group='Visual performance'; Name='Explorer: icons instead of thumbnails'; Risk='Medium'; Restart='sign-out'; Path=$explorerAdv; ValueName='IconsOnly'; Type='DWord'; Value=1; Desc='Stops File Explorer generating image/video thumbnails and shows file icons instead. This can reduce Explorer CPU/disk work on folders with lots of media, but you lose thumbnail previews.' },
+        @{ Id='bg-consumer-features-off'; Category='debloat'; Group='Background content'; Name='Disable Windows consumer features'; Risk='Low'; Path='HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'; ValueName='DisableWindowsConsumerFeatures'; Type='DWord'; Value=1; Desc='Blocks Microsoft consumer-content suggestions and automatic promotional app experiences. This trims background content delivery; it is not a direct FPS tweak.' },
+        @{ Id='bg-cloud-optimized-off'; Category='debloat'; Group='Background content'; Name='Disable cloud-optimized Windows content'; Risk='Low'; Path='HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'; ValueName='DisableCloudOptimizedContent'; Type='DWord'; Value=1; Desc='Stops Windows from tailoring parts of the shell with cloud-delivered optimized content. Mainly a background/privacy trim.' },
+        @{ Id='bg-spotlight-all-off'; Category='debloat'; Group='Background content'; Name='Disable Windows Spotlight features'; Risk='Low'; Path='HKCU:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'; ValueName='DisableWindowsSpotlightFeatures'; Type='DWord'; Value=1; Desc='Turns off Windows Spotlight content such as rotating suggestions and promotional imagery. Reduces background content fetches.' },
+        @{ Id='bg-spotlight-action-off'; Category='debloat'; Group='Background content'; Name='Disable Spotlight in Action Center'; Risk='Low'; Path='HKCU:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'; ValueName='DisableWindowsSpotlightOnActionCenter'; Type='DWord'; Value=1; Desc='Prevents Spotlight suggestions from appearing in notifications/Action Center. Small background-content reduction.' },
+        @{ Id='bg-spotlight-settings-off'; Category='debloat'; Group='Background content'; Name='Disable Spotlight suggestions in Settings'; Risk='Low'; Path='HKCU:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'; ValueName='DisableWindowsSpotlightOnSettings'; Type='DWord'; Value=1; Desc='Stops Settings from showing cloud-delivered Spotlight suggestions and recommendations.' },
+        @{ Id='bg-spotlight-lock-off'; Category='debloat'; Group='Background content'; Name='Disable Spotlight on lock screen'; Risk='Low'; Path='HKCU:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'; ValueName='DisableWindowsSpotlightOnLockScreen'; Type='DWord'; Value=1; Desc='Stops Windows Spotlight from downloading rotating lock-screen content. Your normal static lock-screen image still works.' },
+        @{ Id='bg-feedback-notifications-off'; Category='debloat'; Group='Telemetry'; Name='Disable Windows feedback notifications'; Risk='Low'; Path='HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'; ValueName='DoNotShowFeedbackNotifications'; Type='DWord'; Value=1; Desc='Stops Windows from prompting you for feedback. This only removes feedback prompts; it does not disable core diagnostics by itself.' },
+        @{ Id='bg-feedback-frequency-off'; Category='debloat'; Group='Telemetry'; Name='Set feedback prompt frequency to never'; Risk='Low'; Path='HKCU:\Software\Microsoft\Siuf\Rules'; ValueName='NumberOfSIUFInPeriod'; Type='DWord'; Value=0; Desc='Sets the per-user feedback prompt frequency to zero. Small background/UI cleanup.' },
+        @{ Id='bg-app-launch-track-off'; Category='windows'; Group='Background tracking'; Name='Disable Start app-launch tracking'; Risk='Low'; Restart='sign-out'; Path=$explorerAdv; ValueName='Start_TrackProgs'; Type='DWord'; Value=0; Desc='Stops Start from tracking which programs you launch to build frequently-used app lists. This trims a small amount of shell bookkeeping.' },
+        @{ Id='bg-start-recommendations-off'; Category='windows'; Group='Background tracking'; Name='Disable Start recommendations feed'; Risk='Low'; Restart='sign-out'; Path=$explorerAdv; ValueName='Start_IrisRecommendations'; Type='DWord'; Value=0; Desc='Turns off the Windows 11 Start recommendations feed where supported. This is a shell/background-content tweak, not a guaranteed FPS increase.' },
+        @{ Id='bg-lockscreen-notifications-off'; Category='windows'; Group='Background tracking'; Name='Disable lock-screen app notifications'; Risk='Low'; Path='HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'; ValueName='DisableLockScreenAppNotifications'; Type='DWord'; Value=1; Desc='Stops apps from surfacing notifications on the lock screen, reducing one small background notification path.' },
+        @{ Id='bg-cortana-off'; Category='debloat'; Group='Search and assistant'; Name='Disable Cortana policy'; Risk='Low'; Path='HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'; ValueName='AllowCortana'; Type='DWord'; Value=0; Desc='Disables Cortana where that legacy policy is still honored. Newer Windows builds may already have Cortana removed, in which case this does nothing.' },
+        @{ Id='bg-search-highlights-off'; Category='debloat'; Group='Search and assistant'; Name='Disable Search highlights'; Risk='Low'; Path='HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'; ValueName='EnableDynamicContentInWSB'; Type='DWord'; Value=0; Desc='Stops dynamic web content and Search highlights from being injected into the Windows search box where supported.' },
+        @{ Id='bg-search-location-off'; Category='debloat'; Group='Search and assistant'; Name='Stop Windows Search using location'; Risk='Low'; Path='HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'; ValueName='AllowSearchToUseLocation'; Type='DWord'; Value=0; Desc='Prevents Windows Search from using location data for local suggestions. Small privacy/background trim.' },
+        @{ Id='gamebar-controller-off'; Category='gpu'; Group='Game features'; Name='Disable controller shortcut for Xbox Game Bar'; Risk='Low'; Path='HKCU:\Software\Microsoft\GameBar'; ValueName='UseNexusForGameBarEnabled'; Type='DWord'; Value=0; Desc='Stops the controller guide/Xbox button from opening Game Bar. Useful if you never use Game Bar and want to avoid accidental overlay activation.' },
+        @{ Id='gamebar-startup-off'; Category='gpu'; Group='Game features'; Name='Disable Game Bar startup panel'; Risk='Low'; Path='HKCU:\Software\Microsoft\GameBar'; ValueName='ShowStartupPanel'; Type='DWord'; Value=0; Desc='Stops Game Bar startup tips/panels from appearing. Complements the existing Game DVR toggle without changing your actual game graphics settings.' },
+        @{ Id='apps-location-off'; Category='debloat'; Group='Background permissions'; Name='Block Store apps from using location'; Risk='Medium'; Path='HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy'; ValueName='LetAppsAccessLocation'; Type='DWord'; Value=2; Desc='Blocks Microsoft Store apps from using location in the background. This can reduce background activity, but location-dependent apps will stop working correctly.' },
+        @{ Id='apps-motion-off'; Category='debloat'; Group='Background permissions'; Name='Block Store apps from motion sensors'; Risk='Medium'; Path='HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy'; ValueName='LetAppsAccessMotion'; Type='DWord'; Value=2; Desc='Blocks Store apps from accessing motion sensors. Mostly useful on desktops; apps that need motion data will lose that feature.' }
+    )
+    foreach ($x in $reg) {
+        $t = @{ Id=$x.Id; Category=$x.Category; Group=$x.Group; Name=$x.Name; Risk=$x.Risk; Recommended=$false; Desc=$x.Desc; Registry=@((New-RegEntry $x.Path $x.ValueName $x.Type $x.Value)) }
+        if ($x.Restart) { $t.Restart = $x.Restart }
+        $out += $t
+    }
+
+    # 40 granular service trims. These overlap the bulk debloat button on purpose so advanced
+    # users can disable only the exact service they do not use. Every one is hidden if absent.
+    $svc = @(
+        @{ Id='svc-ajrouter'; Service='AJRouter'; Name='Disable AllJoyn Router'; Desc='Turns off the AllJoyn Router service used by some IoT/device-discovery software. Skip it if you use software that relies on AllJoyn.' },
+        @{ Id='svc-appvclient'; Service='AppVClient'; Name='Disable Microsoft App-V Client'; Desc='Turns off Microsoft Application Virtualization client support. Normally only useful in managed/enterprise environments.' },
+        @{ Id='svc-assignedaccess'; Service='AssignedAccessManagerSvc'; Name='Disable Assigned Access / kiosk service'; Desc='Turns off Windows Assigned Access kiosk-mode management. Do not use this on a kiosk or managed shared device.' },
+        @{ Id='svc-cdpsvc'; Service='CDPSvc'; Name='Disable Connected Devices Platform'; Desc='Stops Connected Devices Platform features such as some cross-device discovery and shared experiences. Can reduce background device chatter.' },
+        @{ Id='svc-dusmsvc'; Service='DusmSvc'; Name='Disable Data Usage service'; Desc='Stops Windows network data-usage accounting. You lose the Settings data-usage statistics.' },
+        @{ Id='svc-fax'; Service='Fax'; Name='Disable Fax service'; Desc='Turns off Windows fax support. Safe if you never send or receive faxes from this PC.' },
+        @{ Id='svc-frameserver'; Service='FrameServer'; Name='Disable Windows Camera Frame Server'; Desc='Stops the shared camera frame service. Do not apply if you use a webcam, Windows Hello camera, OBS camera sources or video-call apps.' },
+        @{ Id='svc-frameservermonitor'; Service='FrameServerMonitor'; Name='Disable Camera Frame Server Monitor'; Desc='Stops the camera frame monitor service. Skip if you use webcams or camera-based Windows features.' },
+        @{ Id='svc-icssvc'; Service='icssvc'; Name='Disable Windows Mobile Hotspot service'; Desc='Turns off Mobile Hotspot support. Your normal Ethernet/Wi-Fi internet still works, but the PC cannot share its connection as a hotspot.' },
+        @{ Id='svc-lfsvc'; Service='lfsvc'; Name='Disable Geolocation service'; Desc='Stops Windows geolocation. Apps and websites can no longer request Windows location services.' },
+        @{ Id='svc-mapsbroker'; Service='MapsBroker'; Name='Disable Downloaded Maps Manager'; Desc='Stops offline-map download/update management. Skip if you use Windows offline maps.' },
+        @{ Id='svc-mixedreality'; Service='MixedRealityOpenXRSvc'; Name='Disable Mixed Reality OpenXR service'; Desc='Turns off Windows Mixed Reality OpenXR support. Do not use if you play VR/Mixed Reality titles through this service.' },
+        @{ Id='svc-nettcpportsharing'; Service='NetTcpPortSharing'; Name='Disable Net.Tcp Port Sharing'; Desc='Turns off WCF Net.Tcp port sharing, mainly used by some business/server applications. Normal gaming and web traffic do not need it.' },
+        @{ Id='svc-phonesvc'; Service='PhoneSvc'; Name='Disable Phone Service'; Desc='Stops phone/telephony integration features. Skip if you use Windows phone-linking features that depend on it.' },
+        @{ Id='svc-remoteaccess'; Service='RemoteAccess'; Name='Disable Routing and Remote Access'; Desc='Turns off Windows routing/RRAS server functionality. Normal client internet works; do not use this if the PC acts as a VPN/router server.' },
+        @{ Id='svc-remoteregistry'; Service='RemoteRegistry'; Name='Disable Remote Registry'; Desc='Stops other computers from editing this PC registry remotely. Usually unnecessary on a gaming PC.' },
+        @{ Id='svc-retaildemo'; Service='RetailDemo'; Name='Disable Retail Demo service'; Desc='Turns off the store-display Retail Demo service. Normal home PCs do not need it.' },
+        @{ Id='svc-scardsvr'; Service='SCardSvr'; Name='Disable Smart Card service'; Desc='Stops smart-card authentication/support. Do not apply if you use smart cards for work, certificates or sign-in.' },
+        @{ Id='svc-scdeviceenum'; Service='ScDeviceEnum'; Name='Disable Smart Card Device Enumeration'; Desc='Stops smart-card device discovery. Skip if you use smart cards.' },
+        @{ Id='svc-sensordata'; Service='SensorDataService'; Name='Disable Sensor Data service'; Desc='Stops sensor data delivery used by some tablets/convertibles. Desktop gaming PCs usually do not need it.' },
+        @{ Id='svc-sensorservice'; Service='SensorService'; Name='Disable Sensor service'; Desc='Stops automatic sensor features such as orientation on supported devices. Skip on tablets/convertibles.' },
+        @{ Id='svc-sensrsvc'; Service='SensrSvc'; Name='Disable Sensor Monitoring service'; Desc='Stops sensor monitoring used for features such as ambient light/orientation on supported hardware.' },
+        @{ Id='svc-sharedaccess'; Service='SharedAccess'; Name='Disable Internet Connection Sharing'; Desc='Turns off Internet Connection Sharing. Your own internet connection still works, but you cannot share it to other devices through Windows ICS.' },
+        @{ Id='svc-smsrouter'; Service='SmsRouter'; Name='Disable SMS Router service'; Desc='Stops Windows SMS routing support used mainly by cellular-capable PCs. Typical desktops do not need it.' },
+        @{ Id='svc-ssdpsrv'; Service='SSDPSRV'; Name='Disable SSDP Discovery'; Desc='Stops UPnP/SSDP device discovery. Some smart-TV, media and network-device discovery features may stop appearing automatically.' },
+        @{ Id='svc-tapisrv'; Service='TapiSrv'; Name='Disable Telephony service'; Desc='Turns off Windows Telephony API support. Skip if you use dial-up, PBX/telephony software or related enterprise tools.' },
+        @{ Id='svc-tabletinput'; Service='TabletInputService'; Name='Disable Touch Keyboard and Handwriting'; Desc='Turns off touch keyboard/handwriting services. Good for a desktop with only mouse and keyboard; do not use on touch/pen devices.' },
+        @{ Id='svc-trkwks'; Service='TrkWks'; Name='Disable Distributed Link Tracking Client'; Desc='Stops tracking links to files across NTFS/network moves. Mostly useful in managed networks; typical gaming PCs rarely need it.' },
+        @{ Id='svc-upnphost'; Service='upnphost'; Name='Disable UPnP Device Host'; Desc='Stops hosting/control of UPnP devices. This can affect some media/network-device features, but not normal internet connectivity.' },
+        @{ Id='svc-wallet'; Service='WalletService'; Name='Disable Wallet Service'; Desc='Turns off Windows Wallet functionality. Safe if you never use Wallet/payment features.' },
+        @{ Id='svc-wbiosrvc'; Service='WbioSrvc'; Name='Disable Windows Biometric Service'; Desc='Stops fingerprint/face biometric support. Do not apply if you sign in with Windows Hello biometrics.' },
+        @{ Id='svc-wersvc'; Service='WerSvc'; Name='Disable Windows Error Reporting service'; Desc='Stops Windows Error Reporting from collecting and submitting crash reports in the background. You lose Microsoft crash-report submission.' },
+        @{ Id='svc-wisvc'; Service='wisvc'; Name='Disable Windows Insider service'; Desc='Stops Windows Insider infrastructure. Appropriate for a stable gaming PC that is not enrolled in Insider builds.' },
+        @{ Id='svc-wmpnetwork'; Service='WMPNetworkSvc'; Name='Disable Media Player Network Sharing'; Desc='Turns off Windows Media Player network sharing/DLNA service. Local media playback still works.' },
+        @{ Id='svc-wpcmonsvc'; Service='WpcMonSvc'; Name='Disable Parental Controls service'; Desc='Turns off the legacy Windows parental-controls monitoring service. Do not apply on a PC where those controls are intentionally used.' },
+        @{ Id='svc-wsearch'; Service='WSearch'; Name='Disable Windows Search indexing'; Desc='Stops background file indexing. This can reduce disk/CPU activity on some PCs, but Start/File Explorer searches become slower and less complete.' },
+        @{ Id='svc-xblauth'; Service='XblAuthManager'; Name='Disable Xbox Live Auth Manager'; Desc='Turns off Xbox Live authentication. Do not apply if you use Xbox/Game Pass/Microsoft Store games that require Xbox services.' },
+        @{ Id='svc-xblgamesave'; Service='XblGameSave'; Name='Disable Xbox Live Game Save'; Desc='Turns off Xbox cloud game-save support. Skip for Xbox/Game Pass games that sync saves.' },
+        @{ Id='svc-xboxgip'; Service='XboxGipSvc'; Name='Disable Xbox Accessory Management'; Desc='Stops Xbox accessory management. Do not apply if you use Xbox controllers/accessories that depend on this service.' },
+        @{ Id='svc-xboxnetapi'; Service='XboxNetApiSvc'; Name='Disable Xbox Live Networking'; Desc='Turns off Xbox Live networking support. Skip for Game Pass/Xbox titles or Xbox party/network features.' }
+    )
+    foreach ($x in $svc) {
+        $svcName = [string]$x.Service
+        $guard = { return [bool](Get-CimInstance Win32_Service -Filter ("Name='" + $svcName.Replace("'", "''") + "'") -ErrorAction SilentlyContinue) }.GetNewClosure()
+        $out += @{ Id=$x.Id; Category='debloat'; Group='Individual background services'; Name=$x.Name; Risk='Medium'; Recommended=$false; Desc=($x.Desc + ' Windows service start mode is snapshotted and Undo restores it exactly.'); Guard=$guard; Services=@(@{ Name=$svcName; Mode='Disabled' }) }
+    }
+
+    # 16 scheduled-task trims, all individually reversible and hidden when absent.
+    $tasks = @(
+        @{ Id='task-compat-appraiser'; Path='\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser'; Name='Disable Compatibility Appraiser task'; Desc='Stops the scheduled compatibility inventory scan. Windows Update compatibility checks may have less background telemetry/inventory data.' },
+        @{ Id='task-programdata-updater'; Path='\Microsoft\Windows\Application Experience\ProgramDataUpdater'; Name='Disable ProgramDataUpdater task'; Desc='Stops a scheduled application-compatibility inventory update task.' },
+        @{ Id='task-startup-app'; Path='\Microsoft\Windows\Application Experience\StartupAppTask'; Name='Disable StartupAppTask'; Desc='Stops a scheduled task that scans startup applications for compatibility/experience data.' },
+        @{ Id='task-autochk-proxy'; Path='\Microsoft\Windows\Autochk\Proxy'; Name='Disable Autochk Proxy telemetry task'; Desc='Stops the Autochk proxy scheduled task used for compatibility/telemetry processing. It does not disable CHKDSK itself.' },
+        @{ Id='task-ceip-consolidator'; Path='\Microsoft\Windows\Customer Experience Improvement Program\Consolidator'; Name='Disable CEIP Consolidator task'; Desc='Stops a Customer Experience Improvement Program aggregation task.' },
+        @{ Id='task-ceip-kernel'; Path='\Microsoft\Windows\Customer Experience Improvement Program\KernelCeipTask'; Name='Disable Kernel CEIP task'; Desc='Stops the kernel CEIP scheduled reporting task where present.' },
+        @{ Id='task-ceip-usb'; Path='\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip'; Name='Disable USB CEIP task'; Desc='Stops scheduled USB usage/compatibility reporting where present.' },
+        @{ Id='task-diskdiagnostic-data'; Path='\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticDataCollector'; Name='Disable Disk Diagnostic data collector'; Desc='Stops the scheduled disk diagnostic telemetry collector. This does not disable SMART or manual disk checks.' },
+        @{ Id='task-feedback-dmclient'; Path='\Microsoft\Windows\Feedback\Siuf\DmClient'; Name='Disable Feedback DmClient task'; Desc='Stops a Windows feedback/diagnostic scheduled task.' },
+        @{ Id='task-feedback-scenario'; Path='\Microsoft\Windows\Feedback\Siuf\DmClientOnScenarioDownload'; Name='Disable Feedback scenario-download task'; Desc='Stops the feedback scenario download scheduled task.' },
+        @{ Id='task-power-analyze'; Path='\Microsoft\Windows\Power Efficiency Diagnostics\AnalyzeSystem'; Name='Disable Power Efficiency AnalyzeSystem task'; Desc='Stops the scheduled power-efficiency analysis pass. Manual powercfg diagnostics still work.' },
+        @{ Id='task-maps-update'; Path='\Microsoft\Windows\Maps\MapsUpdateTask'; Name='Disable Maps update task'; Desc='Stops automatic offline Maps updates. Skip if you use Windows offline maps.' },
+        @{ Id='task-maps-toast'; Path='\Microsoft\Windows\Maps\MapsToastTask'; Name='Disable Maps notification task'; Desc='Stops the offline Maps notification/toast task.' },
+        @{ Id='task-wer-queue'; Path='\Microsoft\Windows\Windows Error Reporting\QueueReporting'; Name='Disable queued error-report task'; Desc='Stops scheduled submission of queued Windows Error Reporting data.' },
+        @{ Id='task-family-monitor'; Path='\Microsoft\Windows\Shell\FamilySafetyMonitor'; Name='Disable Family Safety monitor task'; Desc='Stops the Family Safety monitor task. Do not apply when Microsoft Family Safety is intentionally used on this PC.' },
+        @{ Id='task-family-refresh'; Path='\Microsoft\Windows\Shell\FamilySafetyRefreshTask'; Name='Disable Family Safety refresh task'; Desc='Stops the Family Safety refresh task. Skip when Family Safety controls are in use.' }
+    )
+    foreach ($x in $tasks) {
+        $taskPath = [string]$x.Path
+        $folder = Split-Path -Path $taskPath -Parent
+        $taskName = Split-Path -Path $taskPath -Leaf
+        $taskFolder = $folder.TrimEnd('\') + '\'
+        $guard = { return [bool](Get-ScheduledTask -TaskName $taskName -TaskPath $taskFolder -ErrorAction SilentlyContinue) }.GetNewClosure()
+        $apply = {
+            $touched = Disable-ScheduledTaskList @($taskPath)
+            if (@($touched).Count -eq 0) { throw 'The task is already disabled or Windows did not allow it to be changed.' }
+            return @{ Tasks=@($touched) }
+        }.GetNewClosure()
+        $undo = { param($D) Enable-ScheduledTaskList @($D.Tasks) }.GetNewClosure()
+        $test = {
+            $t = Get-ScheduledTask -TaskName $taskName -TaskPath $taskFolder -ErrorAction SilentlyContinue
+            return [bool]($t -and $t.State -eq 'Disabled')
+        }.GetNewClosure()
+        $out += @{ Id=$x.Id; Category='debloat'; Group='Individual scheduled tasks'; Name=$x.Name; Risk='Low'; Recommended=$false; Desc=($x.Desc + ' Undo re-enables it only if Compact Tweaks disabled it.'); Guard=$guard; Apply=$apply; Undo=$undo; Test=$test }
+    }
+
+    # 6 NIC advanced-property options. These appear only when the active hardware exposes
+    # the standard registry keyword. Applying/undoing restarts the affected adapter briefly.
+    $nic = @(
+        @{ Id='nic-eee-off-v08'; Keyword='*EEE'; Name='Disable Energy Efficient Ethernet (EEE)'; Desc='Stops supported Ethernet adapters entering low-power idle link states. It can help consistency on some adapters, at the cost of slightly higher power use.' },
+        @{ Id='nic-arp-offload-off'; Keyword='*PMARPOffload'; Name='Disable ARP offload'; Desc='Stops the NIC from answering ARP while the system is in low-power states. Mainly a power-management feature; disabling it can simplify adapter behavior on a gaming desktop.' },
+        @{ Id='nic-ns-offload-off'; Keyword='*PMNSOffload'; Name='Disable NS offload'; Desc='Stops IPv6 Neighbor Solicitation offload used for low-power states. Mainly a power-management tweak rather than a throughput tweak.' },
+        @{ Id='nic-packet-coalescing-off'; Keyword='*PacketCoalescing'; Name='Disable NIC packet coalescing'; Desc='Stops supported adapters from batching packets for power savings. This can reduce batching latency on hardware that exposes the option, with higher CPU/power use.' },
+        @{ Id='nic-tcp-checksum-v4-off'; Keyword='*TCPChecksumOffloadIPv4'; Name='Disable TCP checksum offload (IPv4)'; Desc='Moves TCP checksum work back to the CPU instead of the NIC. This may reduce driver/offload quirks but can also increase CPU use, so benchmark before keeping it.' },
+        @{ Id='nic-udp-checksum-v4-off'; Keyword='*UDPChecksumOffloadIPv4'; Name='Disable UDP checksum offload (IPv4)'; Desc='Moves UDP checksum work back to the CPU. Some users test this for latency consistency; on many systems leaving offload enabled is faster. Benchmark both.' }
+    )
+    foreach ($x in $nic) {
+        $kw = [string]$x.Keyword
+        $guard = { return (@(Get-NicAdvancedByKeyword $kw).Count -gt 0) }.GetNewClosure()
+        $apply = {
+            $props = @(Get-NicAdvancedByKeyword $kw)
+            if ($props.Count -eq 0) { throw ('No adapter exposes ' + $kw) }
+            $saved = @(); $restart = @()
+            foreach ($p in $props) {
+                $saved += @{ Name=[string]$p.Name; Keyword=$kw; Value=@($p.RegistryValue) }
+                Set-NetAdapterAdvancedProperty -Name $p.Name -RegistryKeyword $kw -RegistryValue 0 -NoRestart -ErrorAction Stop
+                $restart += [string]$p.Name
+            }
+            foreach ($n in @($restart | Select-Object -Unique)) { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue }
+            return @{ Items=$saved }
+        }.GetNewClosure()
+        $undo = {
+            param($D)
+            $restart = @()
+            foreach ($p in @($D.Items)) {
+                Set-NetAdapterAdvancedProperty -Name ([string]$p.Name) -RegistryKeyword ([string]$p.Keyword) -RegistryValue @($p.Value) -NoRestart -ErrorAction SilentlyContinue
+                $restart += [string]$p.Name
+            }
+            foreach ($n in @($restart | Select-Object -Unique)) { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue }
+        }.GetNewClosure()
+        $test = {
+            $props = @(Get-NicAdvancedByKeyword $kw)
+            if ($props.Count -eq 0) { return $false }
+            foreach ($p in $props) { if ([string](@($p.RegistryValue)[0]) -ne '0') { return $false } }
+            return $true
+        }.GetNewClosure()
+        $out += @{ Id=$x.Id; Category='net'; Group='Adapter advanced properties'; Name=$x.Name; Risk='Medium'; Recommended=$false; Desc=($x.Desc + ' The network adapter restarts briefly when this is applied or undone.'); Guard=$guard; Apply=$apply; Undo=$undo; Test=$test }
+    }
+
+    # 8 one-time cache/repair actions. These are troubleshooting tools, not permanent magic-FPS settings.
+    $out += @{ Id='cache-epic-web'; Category='extra'; Group='Game and driver caches'; Name='Clear Epic Games Launcher web cache'; Risk='Low'; Recommended=$false; OneShot=$true; Desc='Clears Epic Games Launcher webcache folders. Useful when the launcher is laggy or corrupted; it will rebuild the cache next launch.'; Apply={
+        $base = Join-Path $env:LOCALAPPDATA 'EpicGamesLauncher\Saved'
+        $found = @(Get-ChildItem -LiteralPath $base -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'webcache*' })
+        if ($found.Count -eq 0) { throw 'No Epic Games Launcher web cache was found.' }
+        foreach ($d in $found) { Clear-CacheDirectorySafe $d.FullName ('Epic ' + $d.Name) }
+    } }
+    $out += @{ Id='cache-dx-shaders'; Category='extra'; Group='Game and driver caches'; Name='Clear DirectX shader cache'; Risk='Medium'; Recommended=$false; OneShot=$true; Desc='Clears the DirectX shader cache. This can fix corrupted/stale shader cache issues after driver or game changes, but the first matches afterwards may stutter more while shaders rebuild.'; Apply={ Clear-CacheDirectorySafe (Join-Path $env:LOCALAPPDATA 'D3DSCache') 'DirectX shader' } }
+    $out += @{ Id='cache-nv-dx'; Category='vendor'; Group='NVIDIA maintenance'; Name='Clear NVIDIA DXCache'; Risk='Medium'; Recommended=$false; OneShot=$true; Guard={ Test-HasGpuVendor 'NVIDIA' }; Desc='Clears NVIDIA DirectX shader cache files. Use for troubleshooting driver/game stutter; the cache rebuild can temporarily make the next launches less smooth.'; Apply={ Clear-CacheDirectorySafe (Join-Path $env:LOCALAPPDATA 'NVIDIA\DXCache') 'NVIDIA DXCache' } }
+    $out += @{ Id='cache-nv-gl'; Category='vendor'; Group='NVIDIA maintenance'; Name='Clear NVIDIA GLCache'; Risk='Low'; Recommended=$false; OneShot=$true; Guard={ Test-HasGpuVendor 'NVIDIA' }; Desc='Clears NVIDIA OpenGL shader cache files. Mainly a troubleshooting action for OpenGL games/apps.'; Apply={ Clear-CacheDirectorySafe (Join-Path $env:LOCALAPPDATA 'NVIDIA\GLCache') 'NVIDIA GLCache' } }
+    $out += @{ Id='cache-amd-dx'; Category='vendor'; Group='AMD maintenance'; Name='Clear AMD DxCache'; Risk='Medium'; Recommended=$false; OneShot=$true; Guard={ Test-HasGpuVendor 'AMD' }; Desc='Clears AMD DirectX shader cache files. Use for troubleshooting after driver/game changes; shaders rebuild afterwards.'; Apply={ Clear-CacheDirectorySafe (Join-Path $env:LOCALAPPDATA 'AMD\DxCache') 'AMD DxCache' } }
+    $out += @{ Id='cache-amd-gl'; Category='vendor'; Group='AMD maintenance'; Name='Clear AMD GLCache'; Risk='Low'; Recommended=$false; OneShot=$true; Guard={ Test-HasGpuVendor 'AMD' }; Desc='Clears AMD OpenGL cache files where present. Mainly a troubleshooting action.'; Apply={ Clear-CacheDirectorySafe (Join-Path $env:LOCALAPPDATA 'AMD\GLCache') 'AMD GLCache' } }
+    $out += @{ Id='cache-thumbnails'; Category='extra'; Group='Game and driver caches'; Name='Clear Windows thumbnail cache'; Risk='Low'; Recommended=$false; OneShot=$true; Desc='Deletes stale Explorer thumbnail-cache databases where Windows allows it. Thumbnails rebuild automatically.'; Apply={
+        $dir = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Explorer'
+        $files = @(Get-ChildItem -LiteralPath $dir -Filter 'thumbcache_*.db' -File -Force -ErrorAction SilentlyContinue)
+        if ($files.Count -eq 0) { throw 'No thumbnail cache files were found.' }
+        $size = ($files | Measure-Object -Property Length -Sum).Sum
+        $files | Remove-Item -Force -ErrorAction SilentlyContinue
+        Write-Log ('Thumbnail cache cleanup targeted about {0} MB' -f [math]::Round(([double]$size)/1MB)) 'Ok'
+    } }
+    $out += @{ Id='cache-delivery-opt'; Category='extra'; Group='Game and driver caches'; Name='Clear Delivery Optimization cache'; Risk='Low'; Recommended=$false; OneShot=$true; Guard={ [bool](Get-Command Delete-DeliveryOptimizationCache -ErrorAction SilentlyContinue) }; Desc='Deletes cached Windows Update Delivery Optimization files. This only frees/cleans cache; Windows downloads anything it still needs later.'; Apply={ Delete-DeliveryOptimizationCache -Force -ErrorAction Stop; Write-Log 'Delivery Optimization cache cleared.' 'Ok' } }
+
+    return $out
+}
 
 $script:Tweaks = @(
 
@@ -2918,7 +3138,7 @@ $script:Tweaks = @(
        Apply = {
            $prev = (& fsutil.exe behavior query disabledeletenotify 2>&1 | Out-String)
            $prevVal = 0
-           $m = [regex]::Match($prev, '(\\d+)')
+           $m = [regex]::Match($prev, '(\d+)')
            if ($m.Success) { $prevVal = [int]$m.Groups[1].Value }
            & fsutil.exe behavior set disabledeletenotify 0 | Out-Null
            return @{ Prev = $prevVal }
@@ -2926,7 +3146,9 @@ $script:Tweaks = @(
        Undo = { param($D) & fsutil.exe behavior set disabledeletenotify ([int]$D.Prev) | Out-Null }
        Test = {
            $out = (& fsutil.exe behavior query disabledeletenotify 2>&1 | Out-String)
-           return [bool]($out -match '=\\s*0',
+           return [bool]($out -match '=\s*0')
+       } },
+
     @{ Id = 'tcp-rsc-off'; Category = 'net'; Group = 'TCP stack'; Name = 'Disable Receive Segment Coalescing (RSC)'; Risk = 'Low'; Recommended = $false
        Desc = 'RSC merges several incoming TCP segments into one before handing them to the CPU, which helps throughput but can add a small delay. Turning it off processes packets as they arrive instead of batching them, trading a little throughput for steadier timing. Global setting; applies system-wide.'
        Apply = {
@@ -2956,7 +3178,7 @@ $script:Tweaks = @(
        Guard = { Test-HasGpuVendor 'NVIDIA' }
        Desc = 'Turns off the NvTmRep_CrashReport scheduled tasks GeForce Experience creates to send crash reports to NVIDIA in the background. No effect on the driver or your games; only stops that reporting.'
        Apply = {
-           $found = @(Get-ScheduledTask -TaskName 'NvTmRep_CrashReport*' -ErrorAction SilentlyContinue | ForEach-Object { $_.TaskPath.TrimEnd('\') + '\' + $_.TaskName })
+           $found = @(Get-ScheduledTask -TaskName 'NvTmRep_CrashReport*' -ErrorAction SilentlyContinue | ForEach-Object { $_.TaskPath.TrimEnd('\\') + '\\' + $_.TaskName })
            if ($found.Count -eq 0) { throw 'No NVIDIA crash-report tasks were found on this PC.' }
            $touched = Disable-ScheduledTaskList $found
            return @{ Tasks = $touched }
@@ -2964,8 +3186,8 @@ $script:Tweaks = @(
        Undo = { param($D) Enable-ScheduledTaskList @($D.Tasks) }
        Test = { return $script:State.ContainsKey('nv-crashreport-tasks-off') } }
 )
-       } }
-)
+
+$script:Tweaks = @($script:Tweaks) + @(Get-ExtraPerformanceTweaks)
 
 # Hide tweaks that do not apply to this PC (for example Windows 11 only ones on Windows 10).
 $script:Tweaks = @($script:Tweaks | Where-Object { (-not $_.Guard) -or [bool](& $_.Guard) })
