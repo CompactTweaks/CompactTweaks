@@ -14,8 +14,8 @@
     Keep this file ASCII-only so Windows PowerShell 5.1 reads it correctly.
 #>
 
-$script:Version = '1.2.0'
-$script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1'
+$script:Version = '1.2.1'
+$script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1?v=121fixed'
 
 # ----------------------------------------------------------------------------
 # Guards: Windows only, administrator, STA thread
