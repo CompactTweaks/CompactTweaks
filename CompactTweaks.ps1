@@ -14,7 +14,7 @@
     Keep this file ASCII-only so Windows PowerShell 5.1 reads it correctly.
 #>
 
-$script:Version = '1.1.0'
+$script:Version = '1.2.0'
 $script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1'
 
 # ----------------------------------------------------------------------------
@@ -1808,17 +1808,7 @@ $script:Tweaks = @(
        Restart = 'restart'
        Registry = @( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling' 'PowerThrottlingOff' 'DWord' 1) ) },
 
-    @{ Id = 'game-priority'; IsLaptopSafe = $true; Category = 'cpu'; Group = 'Game priority'; Name = 'Fortnite priority: Above Normal'; Risk = 'Low'; Recommended = $true
-       Desc = 'Starts Fortnite at Above Normal CPU priority using the built-in Windows per-program setting (Image File Execution Options). Nothing touches the game itself, and it is never set to High or Realtime. The reference research found no ban evidence with Easy Anti-Cheat. Only Fortnite is covered.'
-       Restart = 'restart'
-       Registry = @( (New-RegEntry $ifeo 'CpuPriorityClass' 'DWord' 6) ) },
-
-    @{ Id = 'game-io'; IsLaptopSafe = $true; Category = 'cpu'; Group = 'Game priority'; Name = 'Fortnite disk priority boost (I/O)'; Risk = 'Low'; Recommended = $false
-       Desc = 'Gives Fortnite High disk (I/O) priority so loading and streaming are not held up by background disk work such as updates and scans. Same per-program Windows setting as above. The gain is mostly on slower drives.'
-       Restart = 'restart'
-       Registry = @( (New-RegEntry $ifeo 'IoPriority' 'DWord' 3) ) },
-
-    @{ Id = 'proc-lower'; IsLaptopSafe = $true; Category = 'cpu'; Group = 'Background processes'; Name = 'Lower background process priority'; Risk = 'Low'; Recommended = $false
+            @{ Id = 'proc-lower'; IsLaptopSafe = $true; Category = 'cpu'; Group = 'Background processes'; Name = 'Lower background process priority'; Risk = 'Low'; Recommended = $false
        Desc = 'Sets your background apps (browsers, updaters, launchers) to Below Normal priority so your game gets the CPU first. System processes, anti-cheat, voice chat, recording apps, Fortnite and Epic are never touched. Windows forgets the change when an app restarts, so run it right before you play. Undo puts them back to Normal.'
        Apply = {
            $me = [System.Diagnostics.Process]::GetCurrentProcess()
@@ -1961,9 +1951,7 @@ $script:Tweaks = @(
     # ================================ GPU OPTIMIZATIONS ================================
 
     # ============================ NEW v0.9: GPU PERFORMANCE ============================
-    @{ Id = 'gpu-minecraft-highperf'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'Per-game GPU preference'; Name = 'Minecraft / Lunar: use the high-performance GPU'; Risk = 'Low'; Recommended = $false
-       Guard = { (@(Get-MinecraftJavaExecutables).Count -gt 0) }
-       Desc = 'Sets detected Minecraft Java runtimes, including common Minecraft Launcher and Lunar Client runtimes, to High performance in Windows Graphics preferences. This is useful on systems with both integrated and dedicated graphics; on a single-GPU desktop it is usually a no-op.'
+           Desc = 'Sets detected Minecraft Java runtimes, including common Minecraft Launcher and Lunar Client runtimes, to High performance in Windows Graphics preferences. This is useful on systems with both integrated and dedicated graphics; on a single-GPU desktop it is usually a no-op.'
        Apply = { Set-HighPerformanceGpuPreference (Get-MinecraftJavaExecutables) }
        Undo = { param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
        Test = { Test-HighPerformanceGpuPreference (Get-MinecraftJavaExecutables) } },
@@ -2075,12 +2063,7 @@ $script:Tweaks = @(
            return [bool]($c.Existed -and ([string]$c.Value) -match 'SwapEffectUpgradeEnable=1;')
        } },
 
-    @{ Id = 'gpu-pref-fn'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'DirectX tweaks'; Name = 'Fortnite: use the high-performance GPU'; Risk = 'Low'; Recommended = $true
-       Desc = 'Sets Fortnite to the High performance GPU in Windows Graphics settings. This matters on PCs with two graphics processors, such as a Ryzen G-series chip plus a graphics card, where Windows can otherwise pick the slow integrated one. Needs Fortnite installed through the Epic Games Launcher.'
-       Apply = {
-           $exe = Get-FortniteExe
-           if (-not $exe) { throw 'Fortnite was not found. Install it through the Epic Games Launcher first.' }
-           $path = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+               $path = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
            $snap = Get-RegSnapshot $path $exe
            Set-RegValue -Path $path -Name $exe -Type 'String' -Value 'GpuPreference=2;'
            return @{ Saved = @($snap) }
@@ -2093,12 +2076,7 @@ $script:Tweaks = @(
            return [bool]($c.Existed -and ([string]$c.Value) -match 'GpuPreference=2;')
        } },
 
-    @{ Id = 'fso-fn'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'Fullscreen tweaks'; Name = 'Fortnite: turn off fullscreen optimizations'; Risk = 'Low'; Recommended = $false
-       Desc = 'Ticks Disable fullscreen optimizations on the Fortnite program itself. Windows ignores this for DirectX 12, so it only helps when Fortnite runs in DirectX 11 (for example with the -d3d11 launch command). Needs Fortnite installed through the Epic Games Launcher.'
-       Apply = {
-           $exe = Get-FortniteExe
-           if (-not $exe) { throw 'Fortnite was not found. Install it through the Epic Games Launcher first.' }
-           $path = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers'
+               $path = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers'
            $snap = Get-RegSnapshot $path $exe
            $cur = ''
            if ($snap.Existed) { $cur = [string]$snap.Value }
@@ -3505,57 +3483,14 @@ function Get-PurePerformanceTweaksV10 {
         }
     }
 
-    # -------------------------- Per-game scheduling --------------------------
-    # Above Normal is used rather than High/Realtime so background audio,
-    # networking and input threads still get CPU time.
-    $games = @(
-        @{ Id='minecraft'; Exe='javaw.exe'; Label='Minecraft / Java games'; Note=' This affects javaw.exe, so other Java desktop applications may inherit it too.' },
-        @{ Id='roblox'; Exe='RobloxPlayerBeta.exe'; Label='Roblox'; Note='' },
-        @{ Id='cs2'; Exe='cs2.exe'; Label='Counter-Strike 2'; Note='' },
-        @{ Id='valorant'; Exe='VALORANT-Win64-Shipping.exe'; Label='VALORANT'; Note='' },
-        @{ Id='apex'; Exe='r5apex.exe'; Label='Apex Legends'; Note='' },
-        @{ Id='overwatch'; Exe='Overwatch.exe'; Label='Overwatch 2'; Note='' },
-        @{ Id='rocketleague'; Exe='RocketLeague.exe'; Label='Rocket League'; Note='' },
-        @{ Id='gta5'; Exe='GTA5.exe'; Label='Grand Theft Auto V'; Note='' },
-        @{ Id='r6'; Exe='RainbowSix.exe'; Label='Rainbow Six Siege'; Note='' },
-        @{ Id='cod'; Exe='cod.exe'; Label='Call of Duty'; Note='' },
-        @{ Id='lol'; Exe='League of Legends.exe'; Label='League of Legends'; Note='' },
-        @{ Id='pubg'; Exe='TslGame.exe'; Label='PUBG'; Note='' },
-        @{ Id='fh5'; Exe='ForzaHorizon5.exe'; Label='Forza Horizon 5'; Note='' },
-        @{ Id='destiny2'; Exe='destiny2.exe'; Label='Destiny 2'; Note='' },
-        @{ Id='fivem'; Exe='FiveM_GTAProcess.exe'; Label='FiveM'; Note='' }
-    )
-
-    foreach ($g in $games) {
-        $perfPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\' + $g.Exe + '\PerfOptions'
-
-        $out += @{
-            Id=('game-' + $g.Id + '-cpu-abovenormal')
-            Category='cpu'; Group='Game process priority'
-            Name=($g.Label + ': Above Normal CPU priority')
-            Risk='Low'; Recommended=$false
-            Desc=('Starts ' + $g.Label + ' at Above Normal CPU priority through Windows IFEO PerfOptions. This does not modify the game files and deliberately avoids High/Realtime priority. Relaunch the game after applying.' + $g.Note)
-            Registry=@((New-RegEntry $perfPath 'CpuPriorityClass' 'DWord' 6))
-        }
-
-        $out += @{
-            Id=('game-' + $g.Id + '-io-high')
-            Category='storage'; Group='Game I/O priority'
-            Name=($g.Label + ': High disk I/O priority')
-            Risk='Low'; Recommended=$false
-            Desc=('Gives ' + $g.Label + ' High Windows I/O priority through IFEO PerfOptions. This can help loading/asset streaming when storage is busy, but it is not a guaranteed FPS increase. Relaunch the game after applying.' + $g.Note)
-            Registry=@((New-RegEntry $perfPath 'IoPriority' 'DWord' 3))
-        }
-    }
+    # Per-game scheduling is handled once by the v1.2 automatic game detector.
 
     # -------------------------- NIC / network driver -------------------------
     $nicZero = @(
         @{ Id='nic-tcp-checksum-v6-off'; Keyword='*TCPChecksumOffloadIPv6'; Name='Disable TCP checksum offload (IPv6)'; Desc='Moves IPv6 TCP checksum work from the NIC to the CPU. Useful only as a latency/driver consistency test; CPU usage may rise.' },
         @{ Id='nic-udp-checksum-v6-off'; Keyword='*UDPChecksumOffloadIPv6'; Name='Disable UDP checksum offload (IPv6)'; Desc='Moves IPv6 UDP checksum work from the NIC to the CPU. Useful only as a latency/driver consistency test; CPU usage may rise.' },
         @{ Id='nic-ip-checksum-v4-off'; Keyword='*IPChecksumOffloadIPv4'; Name='Disable IPv4 header checksum offload'; Desc='Disables IPv4 header checksum offload where the NIC exposes it. This is for testing driver/offload latency behavior, not a universal speed boost.' },
-        @{ Id='nic-rsc-v4-off-adv'; Keyword='*RscIPv4'; Name='Disable adapter RSC (IPv4)'; Desc='Disables the NIC advanced-property form of Receive Segment Coalescing for IPv4. RSC saves CPU but can batch packets.' },
-        @{ Id='nic-rsc-v6-off-adv'; Keyword='*RscIPv6'; Name='Disable adapter RSC (IPv6)'; Desc='Disables the NIC advanced-property form of Receive Segment Coalescing for IPv6.' },
-        @{ Id='nic-priority-vlan-off'; Keyword='*PriorityVLANTag'; Name='Disable Priority & VLAN tagging'; Desc='Disables NIC priority/VLAN tagging where exposed. Do not enable this tweak if your network actually uses VLAN tagging or 802.1p priority.' }
+                        @{ Id='nic-priority-vlan-off'; Keyword='*PriorityVLANTag'; Name='Disable Priority & VLAN tagging'; Desc='Disables NIC priority/VLAN tagging where exposed. Do not enable this tweak if your network actually uses VLAN tagging or 802.1p priority.' }
     )
 
     foreach ($x in $nicZero) {
@@ -3735,13 +3670,9 @@ $script:Tweaks = @($script:Tweaks) + @(Get-PurePerformanceTweaksV10)
 $script:Tweaks = @($script:Tweaks | Where-Object { (-not $_.Guard) -or [bool](& $_.Guard) })
 
 # ----------------------------------------------------------------------------
-# v1.1 PERFORMANCE EXPANSION: +200 entries
+# v1.1 PERFORMANCE EXPANSION (deduplicated in v1.2)
 #
-# 150 per-game Windows IFEO scheduling controls:
-#   - Above Normal CPU priority
-#   - High I/O priority
-#   - Highest supported page priority
-#
+# Per-game IFEO duplicates removed in v1.2; automatic detection is used instead.
 # 50 system performance/background controls:
 #   - 20 NIC driver latency/power-saving controls
 #   - 15 individually reversible scheduled-task trims
@@ -3790,108 +3721,7 @@ function Get-NicMatchingDisplayValueV11 {
 function Get-PurePerformanceTweaksV11 {
     $out = @()
 
-    # ========================================================================
-    # 150 PER-GAME REGISTRY PERFORMANCE CONTROLS
-    # ========================================================================
-    # Windows Image File Execution Options\PerfOptions is used so these settings
-    # apply when the executable launches, without modifying game files.
-    #
-    # CPU priority uses Above Normal, NOT High/Realtime, to avoid starving audio,
-    # networking, anti-cheat, input, Discord, capture tools, etc.
-    #
-    # PagePriority=5 is the highest Windows memory page-priority class accepted
-    # by the IFEO PerfOptions mechanism.
-    # ========================================================================
-
-    $games = @(
-        @{ Id='fortnite'; Exe='FortniteClient-Win64-Shipping.exe'; Label='Fortnite' },
-        @{ Id='eldenring'; Exe='eldenring.exe'; Label='Elden Ring' },
-        @{ Id='cyberpunk'; Exe='Cyberpunk2077.exe'; Label='Cyberpunk 2077' },
-        @{ Id='hogwarts'; Exe='HogwartsLegacy.exe'; Label='Hogwarts Legacy' },
-        @{ Id='witcher3'; Exe='witcher3.exe'; Label='The Witcher 3' },
-        @{ Id='doom-eternal'; Exe='DOOMEternalx64vk.exe'; Label='DOOM Eternal' },
-        @{ Id='doom-2016'; Exe='DOOMx64vk.exe'; Label='DOOM 2016' },
-        @{ Id='bf2042'; Exe='bf2042.exe'; Label='Battlefield 2042' },
-        @{ Id='bf1'; Exe='bf1.exe'; Label='Battlefield 1' },
-        @{ Id='bfv'; Exe='bfv.exe'; Label='Battlefield V' },
-        @{ Id='jedi-fallen'; Exe='starwarsjedifallenorder.exe'; Label='Star Wars Jedi: Fallen Order' },
-        @{ Id='jedi-survivor'; Exe='JediSurvivor.exe'; Label='Star Wars Jedi: Survivor' },
-        @{ Id='ac-valhalla'; Exe='ACValhalla.exe'; Label="Assassin's Creed Valhalla" },
-        @{ Id='ac-mirage'; Exe='ACMirage.exe'; Label="Assassin's Creed Mirage" },
-        @{ Id='farcry6'; Exe='FarCry6.exe'; Label='Far Cry 6' },
-        @{ Id='hitman3'; Exe='HITMAN3.exe'; Label='HITMAN 3 / World of Assassination' },
-        @{ Id='dota2'; Exe='dota2.exe'; Label='Dota 2' },
-        @{ Id='rust'; Exe='RustClient.exe'; Label='Rust' },
-        @{ Id='tarkov'; Exe='EscapeFromTarkov.exe'; Label='Escape from Tarkov' },
-        @{ Id='hunt'; Exe='HuntGame.exe'; Label='Hunt: Showdown' },
-        @{ Id='squad'; Exe='SquadGame.exe'; Label='Squad' },
-        @{ Id='readyornot'; Exe='ReadyOrNot-Win64-Shipping.exe'; Label='Ready or Not' },
-        @{ Id='palworld'; Exe='Palworld-Win64-Shipping.exe'; Label='Palworld' },
-        @{ Id='dbd'; Exe='DeadByDaylight-Win64-Shipping.exe'; Label='Dead by Daylight' },
-        @{ Id='ark-se'; Exe='ShooterGame.exe'; Label='ARK: Survival Evolved' },
-        @{ Id='ark-asa'; Exe='ArkAscended.exe'; Label='ARK: Survival Ascended' },
-        @{ Id='terraria'; Exe='Terraria.exe'; Label='Terraria' },
-        @{ Id='project-zomboid'; Exe='ProjectZomboid64.exe'; Label='Project Zomboid' },
-        @{ Id='factorio'; Exe='factorio.exe'; Label='Factorio' },
-        @{ Id='satisfactory'; Exe='FactoryGame-Win64-Shipping.exe'; Label='Satisfactory' },
-        @{ Id='eu4'; Exe='eu4.exe'; Label='Europa Universalis IV' },
-        @{ Id='ck3'; Exe='ck3.exe'; Label='Crusader Kings III' },
-        @{ Id='hoi4'; Exe='hoi4.exe'; Label='Hearts of Iron IV' },
-        @{ Id='stellaris'; Exe='stellaris.exe'; Label='Stellaris' },
-        @{ Id='civ6'; Exe='CivilizationVI.exe'; Label='Civilization VI' },
-        @{ Id='warframe'; Exe='Warframe.x64.exe'; Label='Warframe' },
-        @{ Id='warthunder'; Exe='aces.exe'; Label='War Thunder' },
-        @{ Id='wot'; Exe='WorldOfTanks.exe'; Label='World of Tanks' },
-        @{ Id='wows'; Exe='WorldOfWarships64.exe'; Label='World of Warships' },
-        @{ Id='poe'; Exe='PathOfExile_x64.exe'; Label='Path of Exile' },
-        @{ Id='last-epoch'; Exe='LastEpoch.exe'; Label='Last Epoch' },
-        @{ Id='diablo4'; Exe='Diablo IV.exe'; Label='Diablo IV' },
-        @{ Id='d2r'; Exe='D2R.exe'; Label='Diablo II: Resurrected' },
-        @{ Id='sc2'; Exe='SC2_x64.exe'; Label='StarCraft II' },
-        @{ Id='hearthstone'; Exe='Hearthstone.exe'; Label='Hearthstone' },
-        @{ Id='brawlhalla'; Exe='Brawlhalla.exe'; Label='Brawlhalla' },
-        @{ Id='geometrydash'; Exe='GeometryDash.exe'; Label='Geometry Dash' },
-        @{ Id='osu'; Exe='osu!.exe'; Label='osu!' },
-        @{ Id='helldivers2'; Exe='helldivers2.exe'; Label='Helldivers 2' },
-        @{ Id='spacemarine2'; Exe='SpaceMarine2.exe'; Label='Warhammer 40,000: Space Marine 2' }
-    )
-
-    foreach ($g in $games) {
-        $perfPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\' + [string]$g.Exe + '\PerfOptions'
-
-        $out += @{
-            Id=('v11-game-' + $g.Id + '-cpu')
-            Category='cpu'
-            Group='Per-game CPU scheduling'
-            Name=($g.Label + ': Above Normal CPU priority')
-            Risk='Low'
-            Recommended=$false
-            Desc=('Sets ' + $g.Label + ' to Above Normal CPU priority through Windows IFEO PerfOptions. This can help the game win CPU time during background load without the starvation risk of High/Realtime priority. Relaunch the game after applying.')
-            Registry=@((New-RegEntry $perfPath 'CpuPriorityClass' 'DWord' 6))
-        }
-
-        $out += @{
-            Id=('v11-game-' + $g.Id + '-io')
-            Category='storage'
-            Group='Per-game I/O scheduling'
-            Name=($g.Label + ': High I/O priority')
-            Risk='Low'
-            Recommended=$false
-            Desc=('Sets ' + $g.Label + ' to High Windows I/O priority through IFEO PerfOptions. This is aimed at asset streaming and loading while the storage device is busy; it is not a guaranteed raw-FPS increase. Relaunch the game after applying.')
-            Registry=@((New-RegEntry $perfPath 'IoPriority' 'DWord' 3))
-        }
-
-        $out += @{
-            Id=('v11-game-' + $g.Id + '-page')
-            Category='storage'
-            Group='Per-game memory scheduling'
-            Name=($g.Label + ': Maximum page priority')
-            Risk='Low'
-            Recommended=$false
-            Desc=('Sets ' + $g.Label + ' memory pages to Windows page priority 5 through IFEO PerfOptions. This can make the memory manager less eager to reclaim the game pages under memory pressure. It does not add RAM. Relaunch the game after applying.')
-            Registry=@((New-RegEntry $perfPath 'PagePriority' 'DWord' 5))
-        }
-    }
+    # Per-game scheduling is handled once by the v1.2 automatic game detector.
 
     # ========================================================================
     # 20 NIC DRIVER PERFORMANCE / LATENCY CONTROLS
@@ -3901,12 +3731,7 @@ function Get-PurePerformanceTweaksV11 {
     # ========================================================================
 
     $nicDisplay = @(
-        @{ Id='flow-control-off'; Pattern='(?i)^Flow Control$'; Want='(?i)Disabled|Off|None'; Name='NIC Flow Control: Off'; Desc='Disables Ethernet pause-frame Flow Control where the driver exposes it. This may reduce pause-induced latency, but can increase packet loss on congested links.' },
-        @{ Id='interrupt-moderation-off'; Pattern='(?i)^Interrupt Moderation$'; Want='(?i)Disabled|Off'; Name='NIC Interrupt Moderation: Off'; Desc='Disables interrupt moderation where supported. This usually trades higher CPU interrupt load for lower packet batching latency.' },
-        @{ Id='lso-v4-off'; Pattern='(?i)Large Send Offload.*IPv4'; Want='(?i)Disabled|Off'; Name='Large Send Offload v2 IPv4: Off'; Desc='Disables IPv4 Large Send Offload. This can reduce large-packet batching/driver latency on some systems, but may increase CPU use.' },
-        @{ Id='lso-v6-off'; Pattern='(?i)Large Send Offload.*IPv6'; Want='(?i)Disabled|Off'; Name='Large Send Offload v2 IPv6: Off'; Desc='Disables IPv6 Large Send Offload. This can reduce large-packet batching/driver latency on some systems, but may increase CPU use.' },
-        @{ Id='rss-on'; Pattern='(?i)^Receive Side Scaling$'; Want='(?i)Enabled|On'; Name='Receive Side Scaling: On'; Desc='Enables Receive Side Scaling where available so network receive processing can be distributed across CPU cores.' },
-        @{ Id='wake-magic-off'; Pattern='(?i)Wake on Magic Packet'; Want='(?i)Disabled|Off'; Name='Wake on Magic Packet: Off'; Desc='Disables Wake-on-LAN magic-packet handling. This removes an unused power/wake feature on gaming desktops that do not use Wake-on-LAN.' },
+                                                @{ Id='wake-magic-off'; Pattern='(?i)Wake on Magic Packet'; Want='(?i)Disabled|Off'; Name='Wake on Magic Packet: Off'; Desc='Disables Wake-on-LAN magic-packet handling. This removes an unused power/wake feature on gaming desktops that do not use Wake-on-LAN.' },
         @{ Id='wake-pattern-off'; Pattern='(?i)Wake on Pattern'; Want='(?i)Disabled|Off'; Name='Wake on Pattern Match: Off'; Desc='Disables network wake pattern matching. Useful only if you do not need the PC to wake from network traffic.' },
         @{ Id='jumbo-off'; Pattern='(?i)^Jumbo (Packet|Frame)$'; Want='(?i)Disabled|Off|1514'; Name='Jumbo Frames: Off / standard MTU'; Desc='Disables jumbo frames or selects the normal Ethernet frame size where the adapter exposes it. Internet gaming normally uses standard MTU; jumbo frames require end-to-end network support.' },
         @{ Id='green-ethernet-off'; Pattern='(?i)^Green Ethernet$'; Want='(?i)Disabled|Off'; Name='Green Ethernet: Off'; Desc='Disables vendor Green Ethernet power saving where available to avoid link power-saving transitions.' },
@@ -4115,6 +3940,458 @@ function Get-PurePerformanceTweaksV11 {
 }
 
 $script:Tweaks = @($script:Tweaks) + @(Get-PurePerformanceTweaksV11)
+
+
+# ----------------------------------------------------------------------------
+# v1.2 - deduplicated game detection + documented low-latency/performance controls
+# ----------------------------------------------------------------------------
+
+function Get-DetectedGameExecutablesV12 {
+    $results = @()
+    $seen = @{}
+
+    function Add-GameCandidateV12 {
+        param([string]$Path, [string]$Source)
+
+        if (-not $Path) { return }
+        try {
+            $full = [Environment]::ExpandEnvironmentVariables($Path.Trim('"'))
+            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { return }
+            if ([IO.Path]::GetExtension($full) -ine '.exe') { return }
+
+            $leaf = [IO.Path]::GetFileName($full)
+            $bad = '(?i)(unins|uninstall|crash|report|benchmark|setup|install|updater|update|easyanticheat|eac|battleye|beservice|redistribut|vc_redist|support|helper|cef|webview|overlay)'
+            if ($leaf -match $bad) { return }
+
+            $key = $full.ToLowerInvariant()
+            if ($seen.ContainsKey($key)) { return }
+            $seen[$key] = $true
+            $script:_GameDetectTemp += [pscustomobject]@{
+                Path   = $full
+                Exe    = $leaf
+                Source = $Source
+            }
+        } catch { }
+    }
+
+    $script:_GameDetectTemp = @()
+
+    # Known game executables help identify running games and launcher installs,
+    # but each scheduling mechanism is still exposed only once in the UI.
+    $knownExe = @(
+        'FortniteClient-Win64-Shipping.exe','javaw.exe','RobloxPlayerBeta.exe','cs2.exe',
+        'VALORANT-Win64-Shipping.exe','r5apex.exe','Overwatch.exe','RocketLeague.exe',
+        'GTA5.exe','RainbowSix.exe','cod.exe','League of Legends.exe','TslGame.exe',
+        'ForzaHorizon5.exe','destiny2.exe','FiveM_GTAProcess.exe','eldenring.exe',
+        'Cyberpunk2077.exe','HogwartsLegacy.exe','witcher3.exe','DOOMEternalx64vk.exe',
+        'DOOMx64vk.exe','bf2042.exe','bf1.exe','bfv.exe','starwarsjedifallenorder.exe',
+        'JediSurvivor.exe','ACValhalla.exe','ACMirage.exe','FarCry6.exe','HITMAN3.exe',
+        'dota2.exe','RustClient.exe','EscapeFromTarkov.exe','HuntGame.exe','SquadGame.exe',
+        'ReadyOrNot-Win64-Shipping.exe','Palworld-Win64-Shipping.exe',
+        'DeadByDaylight-Win64-Shipping.exe','ShooterGame.exe','ArkAscended.exe',
+        'Terraria.exe','ProjectZomboid64.exe','factorio.exe','FactoryGame-Win64-Shipping.exe',
+        'eu4.exe','ck3.exe','hoi4.exe','stellaris.exe','CivilizationVI.exe','Warframe.x64.exe',
+        'aces.exe','WorldOfTanks.exe','WorldOfWarships64.exe','PathOfExile_x64.exe',
+        'LastEpoch.exe','Diablo IV.exe','D2R.exe','SC2_x64.exe','Hearthstone.exe',
+        'Brawlhalla.exe','GeometryDash.exe','osu!.exe','helldivers2.exe','SpaceMarine2.exe'
+    )
+    $knownSet = @{}
+    foreach ($n in $knownExe) { $knownSet[$n.ToLowerInvariant()] = $true }
+
+    # Currently running games. Restrict unknown processes to common game-library paths.
+    foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+        try {
+            $pp = $p.Path
+            if (-not $pp) { continue }
+            $leaf = [IO.Path]::GetFileName($pp)
+            $low = $pp.ToLowerInvariant()
+            $looksLikeGamePath = (
+                $low -match '\\steamapps\\common\\' -or
+                $low -match '\\epic games\\' -or
+                $low -match '\\riot games\\' -or
+                $low -match '\\battle\.net\\' -or
+                $low -match '\\xboxgames\\' -or
+                $low -match '\\roblox\\versions\\' -or
+                $low -match '\\\.lunarclient\\' -or
+                $low -match '\\\.minecraft\\'
+            )
+            if ($knownSet.ContainsKey($leaf.ToLowerInvariant()) -or $looksLikeGamePath) {
+                Add-GameCandidateV12 $pp 'Running process'
+            }
+        } catch { }
+    }
+
+    # Epic Games Launcher manifests.
+    $epicManifestDir = Join-Path $env:ProgramData 'Epic\EpicGamesLauncher\Data\Manifests'
+    if (Test-Path -LiteralPath $epicManifestDir) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $epicManifestDir -Filter '*.item' -File -ErrorAction SilentlyContinue)) {
+            try {
+                $j = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json
+                if ($j.InstallLocation -and $j.LaunchExecutable) {
+                    Add-GameCandidateV12 (Join-Path ([string]$j.InstallLocation) ([string]$j.LaunchExecutable)) 'Epic Games'
+                }
+            } catch { }
+        }
+    }
+
+    # Steam libraries and app manifests. We only scan individual installed game folders,
+    # never an entire drive.
+    $steamRoots = @()
+    try {
+        $steamReg = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamPath
+        if ($steamReg) { $steamRoots += [string]$steamReg }
+    } catch { }
+    $steamRoots += @(
+        (Join-Path ${env:ProgramFiles(x86)} 'Steam'),
+        (Join-Path $env:ProgramFiles 'Steam')
+    )
+    $steamRoots = @($steamRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+
+    $libraryRoots = @()
+    foreach ($root in $steamRoots) {
+        $libraryRoots += $root
+        $vdf = Join-Path $root 'steamapps\libraryfolders.vdf'
+        if (Test-Path -LiteralPath $vdf) {
+            try {
+                $vdfText = Get-Content -LiteralPath $vdf -Raw -ErrorAction Stop
+                foreach ($m in [regex]::Matches($vdfText, '"path"\s*"([^"]+)"')) {
+                    $lp = $m.Groups[1].Value -replace '\\\\','\'
+                    if ($lp -and (Test-Path -LiteralPath $lp)) { $libraryRoots += $lp }
+                }
+            } catch { }
+        }
+    }
+    $libraryRoots = @($libraryRoots | Select-Object -Unique)
+
+    $exclude = '(?i)(unins|uninstall|launcher|crash|report|benchmark|setup|install|updater|update|easyanticheat|eac|battleye|beservice|redistribut|vc_redist|support|helper|cef|webview|overlay)'
+    foreach ($lib in $libraryRoots) {
+        $steamApps = Join-Path $lib 'steamapps'
+        if (-not (Test-Path -LiteralPath $steamApps)) { continue }
+
+        foreach ($acf in @(Get-ChildItem -LiteralPath $steamApps -Filter 'appmanifest_*.acf' -File -ErrorAction SilentlyContinue)) {
+            try {
+                $acfText = Get-Content -LiteralPath $acf.FullName -Raw -ErrorAction Stop
+                $mm = [regex]::Match($acfText, '"installdir"\s*"([^"]+)"')
+                if (-not $mm.Success) { continue }
+
+                $gameRoot = Join-Path (Join-Path $steamApps 'common') $mm.Groups[1].Value
+                if (-not (Test-Path -LiteralPath $gameRoot)) { continue }
+
+                # Prefer a known executable anywhere in the individual game directory.
+                $candidates = @(Get-ChildItem -LiteralPath $gameRoot -Filter '*.exe' -File -Recurse -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        $knownSet.ContainsKey($_.Name.ToLowerInvariant()) -and $_.Name -notmatch $exclude
+                    } | Select-Object -First 4)
+
+                # For games not in the known-name list, choose a small number of likely main
+                # executables. Size filtering avoids tiny launch helpers and uninstallers.
+                if ($candidates.Count -eq 0) {
+                    $candidates = @(Get-ChildItem -LiteralPath $gameRoot -Filter '*.exe' -File -Recurse -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -notmatch $exclude -and $_.Length -ge 1MB } |
+                        Sort-Object Length -Descending |
+                        Select-Object -First 2)
+                }
+
+                foreach ($c in $candidates) { Add-GameCandidateV12 $c.FullName 'Steam' }
+            } catch { }
+        }
+    }
+
+    # Minecraft / Lunar runtimes already have a dedicated reliable detector in this script.
+    foreach ($j in @(Get-MinecraftJavaExecutables)) {
+        Add-GameCandidateV12 $j 'Minecraft / Lunar'
+    }
+
+    # Roblox installs per-version.
+    $robloxVersions = Join-Path $env:LOCALAPPDATA 'Roblox\Versions'
+    if (Test-Path -LiteralPath $robloxVersions) {
+        foreach ($r in @(Get-ChildItem -LiteralPath $robloxVersions -Filter 'RobloxPlayerBeta.exe' -File -Recurse -ErrorAction SilentlyContinue)) {
+            Add-GameCandidateV12 $r.FullName 'Roblox'
+        }
+    }
+
+    $results = @($script:_GameDetectTemp)
+    Remove-Variable -Name _GameDetectTemp -Scope Script -ErrorAction SilentlyContinue
+    return $results
+}
+
+function Get-DetectedGameExeNamesV12 {
+    return @(
+        Get-DetectedGameExecutablesV12 |
+        ForEach-Object { $_.Exe } |
+        Where-Object { $_ } |
+        Select-Object -Unique
+    )
+}
+
+function Set-DetectedGameIfeoValueV12 {
+    param(
+        [string]$ValueName,
+        [int]$Value
+    )
+
+    $names = @(Get-DetectedGameExeNamesV12)
+    if ($names.Count -eq 0) { throw 'No supported/installed games were detected.' }
+
+    $saved = @()
+    foreach ($exe in $names) {
+        $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\' + $exe + '\PerfOptions'
+        $snap = Get-RegSnapshot $path $ValueName
+        Set-RegValue -Path $path -Name $ValueName -Type 'DWord' -Value $Value
+        $saved += $snap
+    }
+
+    return @{ Saved=$saved; Exes=$names; ValueName=$ValueName; Value=$Value }
+}
+
+function Test-DetectedGameIfeoValueV12 {
+    param(
+        [string]$ValueName,
+        [int]$Value
+    )
+
+    $names = @(Get-DetectedGameExeNamesV12)
+    if ($names.Count -eq 0) { return $false }
+
+    foreach ($exe in $names) {
+        $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\' + $exe + '\PerfOptions'
+        $s = Get-RegSnapshot $path $ValueName
+        if (-not $s.Existed -or [int]$s.Value -ne $Value) { return $false }
+    }
+    return $true
+}
+
+function Set-DetectedGameGpuPreferenceV12 {
+    $games = @(Get-DetectedGameExecutablesV12)
+    if ($games.Count -eq 0) { throw 'No supported/installed games were detected.' }
+
+    $reg = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+    $saved = @()
+    foreach ($g in $games) {
+        $snap = Get-RegSnapshot $reg ([string]$g.Path)
+        Set-RegValue -Path $reg -Name ([string]$g.Path) -Type 'String' -Value 'GpuPreference=2;'
+        $saved += $snap
+    }
+
+    return @{ Saved=$saved; Paths=@($games.Path) }
+}
+
+function Test-DetectedGameGpuPreferenceV12 {
+    $games = @(Get-DetectedGameExecutablesV12)
+    if ($games.Count -eq 0) { return $false }
+
+    $reg = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+    foreach ($g in $games) {
+        $s = Get-RegSnapshot $reg ([string]$g.Path)
+        if (-not $s.Existed -or ([string]$s.Value) -notmatch 'GpuPreference=2;') { return $false }
+    }
+    return $true
+}
+
+function Set-PowerCfgBundleV12 {
+    param([array]$Items)
+
+    $saved = @()
+    try {
+        foreach ($i in $Items) {
+            $saved += Set-ActivePowerCfgAcValue ([string]$i.SubGroup) ([string]$i.Setting) ([int]$i.Value)
+        }
+    } catch {
+        foreach ($s in @($saved)) { Restore-PowerCfgAcValue $s }
+        throw
+    }
+
+    return @{ Items=$saved }
+}
+
+function Test-PowerCfgBundleV12 {
+    param([array]$Items)
+    foreach ($i in $Items) {
+        if (-not (Test-PowerCfgAcValue ([string]$i.SubGroup) ([string]$i.Setting) ([int]$i.Value))) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Restore-PowerCfgBundleV12 {
+    param($Data)
+    foreach ($s in @($Data.Items)) { Restore-PowerCfgAcValue $s }
+}
+
+function Get-PurePerformanceTweaksV12 {
+    $out = @()
+
+    # One tweak per mechanism; detected games are handled as a group instead of
+    # inflating the tweak count with one copy for every title.
+    $out += @{
+        Id='auto-games-cpu-priority'; Category='cpu'; Group='Automatic game scheduling'
+        Name='Detected games: Above Normal CPU priority'; Risk='Low'; Recommended=$false
+        Guard={ @(Get-DetectedGameExeNamesV12).Count -gt 0 }
+        Desc='Automatically detects installed/running games and applies the Windows IFEO Above Normal CPU priority once to every detected game. The UI counts this as ONE tweak, regardless of how many games are found. High/Realtime priority is intentionally not used.'
+        Apply={ Set-DetectedGameIfeoValueV12 'CpuPriorityClass' 6 }
+        Undo={ param($D) foreach ($s in @($D.Saved)) { Restore-RegSnapshot $s } }
+        Test={ Test-DetectedGameIfeoValueV12 'CpuPriorityClass' 6 }
+    }
+
+    $out += @{
+        Id='auto-games-io-priority'; Category='storage'; Group='Automatic game scheduling'
+        Name='Detected games: High I/O priority'; Risk='Low'; Recommended=$false
+        Guard={ @(Get-DetectedGameExeNamesV12).Count -gt 0 }
+        Desc='Automatically applies Windows IFEO High I/O priority to every detected game as one tweak. This can help asset streaming/loading when storage is busy; it is not counted once per game.'
+        Apply={ Set-DetectedGameIfeoValueV12 'IoPriority' 3 }
+        Undo={ param($D) foreach ($s in @($D.Saved)) { Restore-RegSnapshot $s } }
+        Test={ Test-DetectedGameIfeoValueV12 'IoPriority' 3 }
+    }
+
+    $out += @{
+        Id='auto-games-page-priority'; Category='storage'; Group='Automatic game scheduling'
+        Name='Detected games: Maximum page priority'; Risk='Low'; Recommended=$false
+        Guard={ @(Get-DetectedGameExeNamesV12).Count -gt 0 }
+        Desc='Automatically sets Windows IFEO PagePriority 5 for all detected games as one tweak. This can make the memory manager less eager to reclaim game pages under memory pressure; it does not add RAM.'
+        Apply={ Set-DetectedGameIfeoValueV12 'PagePriority' 5 }
+        Undo={ param($D) foreach ($s in @($D.Saved)) { Restore-RegSnapshot $s } }
+        Test={ Test-DetectedGameIfeoValueV12 'PagePriority' 5 }
+    }
+
+    $out += @{
+        Id='auto-games-highperf-gpu'; Category='gpu'; Group='Automatic GPU selection'
+        Name='Detected games: Prefer high-performance GPU'; Risk='Low'; Recommended=$false
+        Guard={ @(Get-DetectedGameExecutablesV12).Count -gt 0 }
+        Desc='Automatically puts every detected game executable on Windows Graphics High performance GPU preference. This matters most on systems with both an integrated and a discrete GPU. It is one tweak no matter how many games are detected.'
+        Apply={ Set-DetectedGameGpuPreferenceV12 }
+        Undo={ param($D) foreach ($s in @($D.Saved)) { Restore-RegSnapshot $s } }
+        Test={ Test-DetectedGameGpuPreferenceV12 }
+    }
+
+    # Documented Windows processor power controls not already represented elsewhere.
+    $cpuSettings = @(
+                                        @{ Id='cpu-class1-min-100'; Setting='PROCTHROTTLEMIN1'; Value=100; Name='Hybrid CPU class-1 minimum performance: 100%'; Risk='Medium'; Desc='On heterogeneous CPUs that expose efficiency-class 1 controls, sets the minimum class-1 performance state to 100% on AC power.' },
+        @{ Id='cpu-class1-max-100'; Setting='PROCTHROTTLEMAX1'; Value=100; Name='Hybrid CPU class-1 maximum performance: 100%'; Risk='Low'; Desc='On supported heterogeneous CPUs, ensures the class-1 maximum performance state is not capped below 100% on AC power.' },
+        @{ Id='cpu-class1-inc-rocket'; Setting='PERFINCPOL1'; Value=2; Name='Hybrid CPU class-1 increase policy: Rocket'; Risk='Medium'; Desc='Uses the Rocket performance-increase policy for efficiency-class 1 processors where Windows exposes the setting.' },
+        @{ Id='cpu-class1-dec-single'; Setting='PERFDECPOL1'; Value=1; Name='Hybrid CPU class-1 decrease policy: Single'; Risk='Medium'; Desc='Makes class-1 performance decrease more gradually on supported heterogeneous processors.' },
+        @{ Id='cpu-class1-inc-threshold-10'; Setting='PERFINCTHRESHOLD1'; Value=10; Name='Hybrid CPU class-1 increase threshold: 10%'; Risk='Medium'; Desc='Lowers the utilization threshold needed to request a higher class-1 performance state on supported heterogeneous CPUs.' },
+        @{ Id='cpu-class1-dec-threshold-8'; Setting='PERFDECTHRESHOLD1'; Value=8; Name='Hybrid CPU class-1 decrease threshold: 8%'; Risk='Medium'; Desc='Uses an 8% class-1 performance-decrease threshold on supported heterogeneous CPUs.' },
+        @{ Id='cpu-class1-inc-time-1'; Setting='PERFINCTIME1'; Value=1; Name='Hybrid CPU class-1 performance increase time: Fast'; Risk='Medium'; Desc='Allows faster class-1 performance-state ramp-up on supported heterogeneous CPUs.' },
+        @{ Id='cpu-class1-dec-time-100'; Setting='PERFDECTIME1'; Value=100; Name='Hybrid CPU class-1 performance decrease time: Slow'; Risk='Medium'; Desc='Keeps class-1 processor performance from dropping as quickly between short bursts of work.' },
+                @{ Id='cpu-hetero-scheduling-performance'; Setting='SCHEDPOLICY'; Value=2; Name='Hybrid scheduling: Prefer performant processors'; Risk='Medium'; Desc='On heterogeneous CPUs, sets the Windows long-thread scheduling policy to Prefer performant processors.' },
+        @{ Id='cpu-hetero-short-scheduling-performance'; Setting='SHORTSCHEDPOLICY'; Value=2; Name='Hybrid short-thread scheduling: Prefer performant processors'; Risk='Medium'; Desc='On heterogeneous CPUs, sets the short-thread scheduling policy to Prefer performant processors.' },
+        @{ Id='cpu-hetero-inc-time-0'; Setting='HETEROINCREASETIME'; Value=0; Name='Hybrid efficiency-core unpark delay: Minimum'; Risk='Medium'; Desc='Reduces the time before Windows can unpark additional efficiency-class 1 processors on supported heterogeneous CPUs.' },
+        @{ Id='cpu-hetero-dec-time-100'; Setting='HETERODECREASETIME'; Value=100; Name='Hybrid efficiency-core repark delay: Slow'; Risk='Medium'; Desc='Makes Windows wait longer before parking efficiency-class 1 processors again after load falls.' },
+        @{ Id='cpu-hetero-class0-floor-100'; Setting='HETEROCLASS0FLOORPERF'; Value=100; Name='Hybrid performant-core floor: 100%'; Risk='Medium'; Desc='On supported heterogeneous CPUs, sets the class-0 performance floor used by heterogeneous scheduling to 100%.' },
+        @{ Id='cpu-hetero-class1-initial-100'; Setting='HETEROCLASS1INITIALPERF'; Value=100; Name='Hybrid class-1 initial performance: 100%'; Risk='Medium'; Desc='On supported heterogeneous CPUs, asks newly unparked class-1 processors to start at full performance.' }
+    )
+
+    foreach ($x in $cpuSettings) {
+        $setting=[string]$x.Setting
+        $value=[int]$x.Value
+        $guard={ Test-PowerCfgSettingAvailable 'SUB_PROCESSOR' $setting }.GetNewClosure()
+        $apply={ Set-ActivePowerCfgAcValue 'SUB_PROCESSOR' $setting $value }.GetNewClosure()
+        $undo={ param($D) Restore-PowerCfgAcValue $D }.GetNewClosure()
+        $test={ Test-PowerCfgAcValue 'SUB_PROCESSOR' $setting $value }.GetNewClosure()
+
+        $out += @{
+            Id=$x.Id; Category='cpu'; Group='Advanced processor latency'
+            Name=$x.Name; Risk=$x.Risk; Recommended=$false; Desc=$x.Desc
+            Guard=$guard; Apply=$apply; Undo=$undo; Test=$test
+        }
+    }
+
+    # Windows processor responsiveness override: one coordinated feature, counted once.
+    $resp = @(
+        @{ SubGroup='SUB_PROCESSOR'; Setting='RESPENABLETHRESHOLD'; Value=2 },
+        @{ SubGroup='SUB_PROCESSOR'; Setting='RESPDISABLETHRESHOLD'; Value=1 },
+        @{ SubGroup='SUB_PROCESSOR'; Setting='RESPENABLETIME'; Value=1 },
+        @{ SubGroup='SUB_PROCESSOR'; Setting='RESPDISABLETIME'; Value=10 },
+        @{ SubGroup='SUB_PROCESSOR'; Setting='RESPPERFFLOOR'; Value=100 },
+        @{ SubGroup='SUB_PROCESSOR'; Setting='RESPEPPCEILING'; Value=0 }
+    )
+    $respGuard = {
+        foreach ($i in $resp) {
+            if (-not (Test-PowerCfgSettingAvailable $i.SubGroup $i.Setting)) { return $false }
+        }
+        return $true
+    }.GetNewClosure()
+    $respApply = { Set-PowerCfgBundleV12 $resp }.GetNewClosure()
+    $respUndo = { param($D) Restore-PowerCfgBundleV12 $D }.GetNewClosure()
+    $respTest = { Test-PowerCfgBundleV12 $resp }.GetNewClosure()
+    $out += @{
+        Id='cpu-io-responsiveness-override'; Category='cpu'; Group='I/O and DPC responsiveness'
+        Name='Aggressive CPU I/O responsiveness override'; Risk='Medium'; Recommended=$false
+        Desc='Tunes Windows Processor Responsiveness Override as one coordinated feature. It enters the high-performance floor quickly when DPC-heavy disk/network work appears, uses a 100% performance floor and EPP ceiling 0, then waits longer before leaving the responsiveness period. Best for latency testing; expect more power and heat.'
+        Guard=$respGuard; Apply=$respApply; Undo=$respUndo; Test=$respTest
+    }
+
+    # Device power idling: documented kernel device-idle policy, Performance index 0.
+    $deviceIdleSub = 'fea3413e-7e05-4911-9a71-700331f1c294'
+    $deviceIdleSetting = '4faab71a-92e5-4726-b531-224559672d19'
+    $dGuard = { Test-PowerCfgSettingAvailable $deviceIdleSub $deviceIdleSetting }.GetNewClosure()
+    $dApply = { Set-ActivePowerCfgAcValue $deviceIdleSub $deviceIdleSetting 0 }.GetNewClosure()
+    $dUndo = { param($D) Restore-PowerCfgAcValue $D }.GetNewClosure()
+    $dTest = { Test-PowerCfgAcValue $deviceIdleSub $deviceIdleSetting 0 }.GetNewClosure()
+    $out += @{
+        Id='device-idle-performance'; Category='windows'; Group='Device latency'
+        Name='Kernel device idle policy: Performance'; Risk='Medium'; Recommended=$false
+        Desc='Selects the Windows kernel device-idle Performance policy instead of conservation-oriented idle timeouts for devices managed by kernel idle detection. This trades idle power for device readiness.'
+        Guard=$dGuard; Apply=$dApply; Undo=$dUndo; Test=$dTest
+    }
+
+    # Wi-Fi power policy: Maximum Performance on AC.
+    $wifiSub = '19cbb8fa-5279-450e-9fac-8a3d5fedd0c1'
+    $wifiSetting = '12bbebe6-58d6-4636-95bb-3217ef867c1a'
+    $wGuard = { Test-PowerCfgSettingAvailable $wifiSub $wifiSetting }.GetNewClosure()
+    $wApply = { Set-ActivePowerCfgAcValue $wifiSub $wifiSetting 0 }.GetNewClosure()
+    $wUndo = { param($D) Restore-PowerCfgAcValue $D }.GetNewClosure()
+    $wTest = { Test-PowerCfgAcValue $wifiSub $wifiSetting 0 }.GetNewClosure()
+    $out += @{
+        Id='wifi-power-max-performance'; Category='net'; Group='Wireless latency'
+        Name='Wi-Fi power saving: Maximum Performance (AC)'; Risk='Low'; Recommended=$false
+        Desc='Sets the Windows wireless-adapter power policy to Maximum Performance while plugged in. This avoids OS-requested Wi-Fi power saving; it mainly matters on wireless gaming PCs.'
+        Guard=$wGuard; Apply=$wApply; Undo=$wUndo; Test=$wTest
+    }
+
+    # Full hypervisor-off option. This is real and potentially performance-relevant,
+    # but it deliberately stays High risk because it disables virtualization-backed features.
+    $out += @{
+        Id='hypervisor-off-performance'; Category='cpu'; Group='Virtualization overhead'
+        Name='Disable Windows hypervisor at boot'; Risk='High'; Recommended=$false; Restart='restart'
+        Desc='Sets hypervisorlaunchtype=off. This removes the Windows hypervisor from the next boot, which can matter on systems using Hyper-V/VBS. It also disables Hyper-V VMs, WSL2, Windows Sandbox and virtualization-based security features until undone. Use only if you deliberately want a no-hypervisor gaming boot.'
+        Apply={
+            Suspend-BitLockerForBoot
+            $prev = Get-BcdFlag 'hypervisorlaunchtype'
+            $msg = (& bcdedit.exe /set '{current}' hypervisorlaunchtype off 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw ('BCDEdit failed: ' + $msg.Trim()) }
+            return @{ Previous=$prev }
+        }
+        Undo={
+            param($D)
+            Suspend-BitLockerForBoot
+            if ($D.Previous) {
+                $msg = (& bcdedit.exe /set '{current}' hypervisorlaunchtype ([string]$D.Previous) 2>&1 | Out-String)
+            } else {
+                $msg = (& bcdedit.exe /deletevalue '{current}' hypervisorlaunchtype 2>&1 | Out-String)
+            }
+            if ($LASTEXITCODE -ne 0) { throw ('BCDEdit undo failed: ' + $msg.Trim()) }
+        }
+        Test={
+            $v = Get-BcdFlag 'hypervisorlaunchtype'
+            return [bool]($v -and $v.ToLowerInvariant() -eq 'off')
+        }
+    }
+
+    return @($out)
+}
+
+$script:Tweaks = @($script:Tweaks) + @(Get-PurePerformanceTweaksV12)
+
+# Guard against accidental duplicate tweak IDs. A duplicate ID is never counted twice.
+$script:SeenTweakIds = @{}
+$script:Tweaks = @($script:Tweaks | Where-Object {
+    $id = [string]$_.Id
+    if ([string]::IsNullOrWhiteSpace($id) -or $script:SeenTweakIds.ContainsKey($id)) { return $false }
+    $script:SeenTweakIds[$id] = $true
+    return $true
+})
 
 # v1.0: detected App Optimizer entries are intentionally not added to the tweak catalog.
 
