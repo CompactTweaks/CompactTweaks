@@ -3508,14 +3508,15 @@ $xaml = @'
       </Grid.ColumnDefinitions>
 
       <!-- Sidebar -->
-      <Border Grid.Column="0" Background="Black" BorderBrush="#26FFFFFF" BorderThickness="0,0,1,0" ClipToBounds="True">
+      <Border Grid.Column="0" Background="Transparent" BorderBrush="#26FFFFFF" BorderThickness="0,0,1,0" ClipToBounds="True">
         <Grid>
           <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
-          <Canvas Width="268" Height="900" ClipToBounds="True">
+
+          <!-- Blurred red/black sidebar background. It spans behind the entire navigation. -->
+          <Canvas Grid.RowSpan="2" Width="268" Height="900" ClipToBounds="True" Panel.ZIndex="0" IsHitTestVisible="False">
             <Canvas.Effect>
               <BlurEffect Radius="55" KernelType="Gaussian"/>
             </Canvas.Effect>
@@ -3560,32 +3561,30 @@ $xaml = @'
               </Ellipse.Fill>
             </Ellipse>
           </Canvas>
-          <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="20,22,20,14">
-            <Border Width="40" Height="40" CornerRadius="13" Background="White">
-              <Viewbox Width="22" Height="22">
-                <Canvas Width="24" Height="24"><Path Data="M13,2 L4,14 H10 L9,22 L18,10 H12 Z" Fill="#A10D18"/></Canvas>
-              </Viewbox>
-            </Border>
-            <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
-              <TextBlock Text="Compact Tweaks" FontSize="17" FontWeight="ExtraBold"/>
-              <TextBlock x:Name="VersionText" Text="v0.4.0" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource Faint}"/>
-            </StackPanel>
-          </StackPanel>
-          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="12,6,6,6">
+
+          <!-- Navigation sits directly over the blurred background. -->
+          <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                        Margin="12,18,6,8" Panel.ZIndex="1">
             <Grid Margin="0,0,6,0">
-              <Border x:Name="NavPill" Height="42" VerticalAlignment="Top" CornerRadius="12" Background="#3DFFFFFF" BorderBrush="#66FFFFFF" BorderThickness="1">
+              <Border x:Name="NavPill" Height="42" VerticalAlignment="Top" CornerRadius="12"
+                      Background="#3DFFFFFF" BorderBrush="#66FFFFFF" BorderThickness="1">
                 <Border.RenderTransform><TranslateTransform/></Border.RenderTransform>
-                <Border Width="3" Height="18" HorizontalAlignment="Left" Margin="7,0,0,0" CornerRadius="2" Background="White"/>
+                <Border Width="3" Height="18" HorizontalAlignment="Left" Margin="7,0,0,0"
+                        CornerRadius="2" Background="White"/>
               </Border>
               <StackPanel x:Name="NavList"/>
             </Grid>
           </ScrollViewer>
-          <StackPanel Grid.Row="2" Margin="20,12,20,18">
+
+          <!-- Status stays at the bottom, with no opaque black panel behind it. -->
+          <StackPanel Grid.Row="1" Margin="20,8,20,18" Panel.ZIndex="1">
             <StackPanel Orientation="Horizontal">
               <Ellipse Width="8" Height="8" Fill="White" VerticalAlignment="Center"/>
-              <TextBlock Text="Running as administrator" Margin="10,0,0,0" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource Muted}"/>
+              <TextBlock Text="Running as administrator" Margin="10,0,0,0" FontSize="12.5"
+                         FontWeight="SemiBold" Foreground="{StaticResource Muted}"/>
             </StackPanel>
-            <TextBlock x:Name="SideNote" Text="" Margin="18,6,0,0" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource Faint}" TextWrapping="Wrap"/>
+            <TextBlock x:Name="SideNote" Text="" Margin="18,6,0,0" FontSize="12"
+                       FontWeight="SemiBold" Foreground="{StaticResource Faint}" TextWrapping="Wrap"/>
           </StackPanel>
         </Grid>
       </Border>
@@ -3860,7 +3859,7 @@ $xaml = @'
 
 $script:Window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$xaml)))
 $uiNames = @(
-    'VersionText', 'NavPill', 'NavList', 'SideNote', 'PageHost', 'HomePage', 'HeroMark', 'TitleLetters', 'Slogan', 'SysLine',
+    'NavPill', 'NavList', 'SideNote', 'PageHost', 'HomePage', 'HeroMark', 'TitleLetters', 'Slogan', 'SysLine',
     'BtnHomeRestore', 'BtnHomeApplyAll', 'BtnHomeBrowse', 'TileCpu', 'IconCpu', 'CpuName', 'CpuVal', 'CpuSpeed', 'CpuProc', 'CpuLogical', 'CpuUp',
     'CpuSpark', 'ThreadBars', 'TileMem', 'IconMem', 'MemTotal', 'MemVal', 'MemSub', 'MemBar', 'MemUsedText', 'MemFreeText',
     'TileGpu', 'IconGpu', 'GpuName', 'GpuRing', 'GpuVal', 'GpuVram', 'GpuEngine', 'TileDisk', 'IconDisk', 'DiskVal', 'DiskSpark',
@@ -5129,7 +5128,6 @@ function Start-HomeEntrance {
 # ----------------------------------------------------------------------------
 # Wire up and start
 # ----------------------------------------------------------------------------
-$script:Ui.VersionText.Text = 'v' + $script:Version
 $script:Ui.SysLine.Text = Get-SystemSummary
 try {
     $script:Ui.IconCpu.Child = (New-Icon 'cpu' 19)
