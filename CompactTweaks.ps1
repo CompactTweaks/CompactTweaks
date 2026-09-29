@@ -4493,11 +4493,10 @@ $xaml = @'
       <!-- Main area -->
       <Grid Grid.Column="1">
         <Grid.Background>
-          <LinearGradientBrush StartPoint="0,0" EndPoint="0.75,1">
-            <GradientStop Color="#900812" Offset="0"/>
-            <GradientStop Color="#650710" Offset="0.38"/>
-            <GradientStop Color="#36050A" Offset="0.72"/>
-            <GradientStop Color="#0D0204" Offset="1"/>
+          <LinearGradientBrush StartPoint="0,0" EndPoint="0.70,1">
+            <GradientStop Color="#7A0710" Offset="0"/>
+            <GradientStop Color="#50060C" Offset="0.48"/>
+            <GradientStop Color="#160204" Offset="1"/>
           </LinearGradientBrush>
         </Grid.Background>
         <Grid.RowDefinitions>
@@ -4510,15 +4509,15 @@ $xaml = @'
           <ScrollViewer x:Name="HomePage" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel Margin="34,28,34,34">
               <StackPanel Orientation="Horizontal">
-                <Border x:Name="HeroMark" Width="92" Height="92" CornerRadius="22" Background="#16000000"
-                        BorderBrush="#66FF1724" BorderThickness="1" ClipToBounds="True"
-                        RenderTransformOrigin="0.5,0.5">
+                <Border x:Name="HeroMark" Width="78" Height="78" CornerRadius="24" Background="White" RenderTransformOrigin="0.5,0.5">
                   <Border.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Border.RenderTransform>
-                  <Image x:Name="HeroLogo" Stretch="UniformToFill"/>
+                  <Viewbox Width="38" Height="38">
+                    <Canvas Width="24" Height="24"><Path Data="M13,2 L4,14 H10 L9,22 L18,10 H12 Z" Fill="#A10D18"/></Canvas>
+                  </Viewbox>
                 </Border>
                 <StackPanel Margin="22,0,0,0" VerticalAlignment="Center">
                   <StackPanel x:Name="TitleLetters" Orientation="Horizontal"/>
-                  <TextBlock x:Name="Slogan" Text="STAY COMPACT, STAY FAST" FontFamily="Bahnschrift SemiCondensed" FontSize="20" FontWeight="SemiBold" FontStyle="Italic" Margin="0,7,0,0">
+                  <TextBlock x:Name="Slogan" Text="Stay Compact, Stay Fast." FontSize="22" FontWeight="Bold" Margin="0,6,0,0">
                     <TextBlock.RenderTransform><TranslateTransform/></TextBlock.RenderTransform>
                   </TextBlock>
                 </StackPanel>
@@ -5229,7 +5228,7 @@ Whv2I4e/dm4NaG9Fs/9X8yXouIINRd1Tcagk9+KqZDwDWWwsZKutlvHhnI9vNqarvmZcWe8c8vyqAm0w
 
 $script:Window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$xaml)))
 $uiNames = @(
-    'NavPill', 'NavList', 'SidebarBackground', 'SideNote', 'PageHost', 'HomePage', 'HeroMark', 'HeroLogo', 'TitleLetters', 'Slogan', 'SysLine',
+    'NavPill', 'NavList', 'SidebarBackground', 'SideNote', 'PageHost', 'HomePage', 'HeroMark', 'TitleLetters', 'Slogan', 'SysLine',
     'BtnHomeRestore', 'BtnHomeApplyAll', 'BtnHomeBrowse', 'TileCpu', 'IconCpu', 'CpuName', 'CpuVal', 'CpuSpeed', 'CpuProc', 'CpuLogical', 'CpuUp',
     'CpuSpark', 'ThreadBars', 'TileMem', 'IconMem', 'MemTotal', 'MemVal', 'MemSub', 'MemBar', 'MemUsedText', 'MemFreeText',
     'TileGpu', 'IconGpu', 'GpuName', 'GpuRing', 'GpuVal', 'GpuVram', 'GpuEngine', 'TileDisk', 'IconDisk', 'DiskVal', 'DiskSpark',
@@ -5258,21 +5257,35 @@ try {
     Write-Log ('Sidebar background image failed to load: ' + $_.Exception.Message) 'Warn'
 }
 
-# Load Compact Tweaks branding image for the home mark and window/taskbar icon.
+# Compact Tweaks logo.
+# This is intentionally created in PowerShell after XAML parsing so a logo/font
+# customization can never stop the entire window from loading.
 try {
     $logoBytes = [Convert]::FromBase64String(($script:CompactLogoBase64 -replace '\s',''))
-    $logoMs = New-Object System.IO.MemoryStream(,$logoBytes)
+    $logoStream = New-Object System.IO.MemoryStream(,$logoBytes)
     try {
-        $logoBmp = New-Object System.Windows.Media.Imaging.BitmapImage
-        $logoBmp.BeginInit()
-        $logoBmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
-        $logoBmp.StreamSource = $logoMs
-        $logoBmp.EndInit()
-        $logoBmp.Freeze()
-        $script:Ui.HeroLogo.Source = $logoBmp
-        $script:Window.Icon = $logoBmp
+        $logoBitmap = New-Object System.Windows.Media.Imaging.BitmapImage
+        $logoBitmap.BeginInit()
+        $logoBitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+        $logoBitmap.StreamSource = $logoStream
+        $logoBitmap.EndInit()
+        $logoBitmap.Freeze()
+
+        # Window/taskbar icon.
+        $script:Window.Icon = $logoBitmap
+
+        # Home-screen mark: replace the old lightning graphic at runtime.
+        if ($script:Ui.HeroMark) {
+            $homeLogo = New-Object System.Windows.Controls.Image
+            $homeLogo.Source = $logoBitmap
+            $homeLogo.Stretch = [System.Windows.Media.Stretch]::UniformToFill
+            $homeLogo.Width = 78
+            $homeLogo.Height = 78
+            $script:Ui.HeroMark.Background = [System.Windows.Media.Brushes]::Black
+            $script:Ui.HeroMark.Child = $homeLogo
+        }
     } finally {
-        $logoMs.Dispose()
+        $logoStream.Dispose()
     }
 } catch {
     Write-Log ('Compact Tweaks logo failed to load: ' + $_.Exception.Message) 'Warn'
@@ -5288,6 +5301,15 @@ try {
 } catch { }
 $script:Window.FontFamily = New-Object System.Windows.Media.FontFamily($fontPick)
 $script:FontPick = $fontPick
+
+# Home branding typography. These properties belong to TextBlock, so they are safe here.
+try {
+    $script:Ui.Slogan.Text = 'STAY COMPACT, STAY FAST'
+    $script:Ui.Slogan.FontFamily = New-Object System.Windows.Media.FontFamily('Bahnschrift SemiCondensed')
+    $script:Ui.Slogan.FontSize = 20
+    $script:Ui.Slogan.FontWeight = [System.Windows.FontWeight]::FromOpenTypeWeight(600)
+    $script:Ui.Slogan.FontStyle = [System.Windows.FontStyles]::Italic
+} catch { }
 
 # ----------------------------------------------------------------------------
 # UI helpers
@@ -6503,7 +6525,7 @@ function Start-HomeEntrance {
         $tb = New-Object System.Windows.Controls.TextBlock
         $tb.Text = [string]$ch
         $tb.FontSize = 52
-        $tb.FontFamily = New-Object System.Windows.Media.FontFamily('Bahnschrift SemiCondensed')
+        try { $tb.FontFamily = New-Object System.Windows.Media.FontFamily('Bahnschrift SemiCondensed') } catch { }
         $tb.FontWeight = [System.Windows.FontWeight]::FromOpenTypeWeight(900)
         $tb.Foreground = New-Brush '#FFFFFF'
         $tt = New-Object System.Windows.Media.TranslateTransform
