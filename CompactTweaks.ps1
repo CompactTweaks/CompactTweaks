@@ -1951,11 +1951,6 @@ $script:Tweaks = @(
     # ================================ GPU OPTIMIZATIONS ================================
 
     # ============================ NEW v0.9: GPU PERFORMANCE ============================
-           Desc = 'Sets detected Minecraft Java runtimes, including common Minecraft Launcher and Lunar Client runtimes, to High performance in Windows Graphics preferences. This is useful on systems with both integrated and dedicated graphics; on a single-GPU desktop it is usually a no-op.'
-       Apply = { Set-HighPerformanceGpuPreference (Get-MinecraftJavaExecutables) }
-       Undo = { param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
-       Test = { Test-HighPerformanceGpuPreference (Get-MinecraftJavaExecutables) } },
-
     @{ Id = 'gpu-autohdr-off'; IsLaptopSafe = $true; Category = 'gpu'; Group = 'Graphics features'; Name = 'Disable Auto HDR for games'; Risk = 'Low'; Recommended = $false
        Desc = 'Turns off Windows Auto HDR in the DirectX global graphics settings while preserving the other values in that setting. This can remove HDR conversion work and avoid HDR-related presentation issues if you do not use Auto HDR. It is not a guaranteed FPS increase.'
        Apply = {
@@ -2061,37 +2056,6 @@ $script:Tweaks = @(
        Test = {
            $c = Get-RegSnapshot 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' 'DirectXUserGlobalSettings'
            return [bool]($c.Existed -and ([string]$c.Value) -match 'SwapEffectUpgradeEnable=1;')
-       } },
-
-               $path = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
-           $snap = Get-RegSnapshot $path $exe
-           Set-RegValue -Path $path -Name $exe -Type 'String' -Value 'GpuPreference=2;'
-           return @{ Saved = @($snap) }
-       }
-       Undo = { param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
-       Test = {
-           $exe = Get-FortniteExe
-           if (-not $exe) { return $false }
-           $c = Get-RegSnapshot 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' $exe
-           return [bool]($c.Existed -and ([string]$c.Value) -match 'GpuPreference=2;')
-       } },
-
-               $path = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers'
-           $snap = Get-RegSnapshot $path $exe
-           $cur = ''
-           if ($snap.Existed) { $cur = [string]$snap.Value }
-           if ($cur -match 'DISABLEDXMAXIMIZEDWINDOWEDMODE') { $new = $cur }
-           elseif ($cur) { $new = $cur.TrimEnd() + ' DISABLEDXMAXIMIZEDWINDOWEDMODE' }
-           else { $new = '~ DISABLEDXMAXIMIZEDWINDOWEDMODE' }
-           Set-RegValue -Path $path -Name $exe -Type 'String' -Value $new
-           return @{ Saved = @($snap) }
-       }
-       Undo = { param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
-       Test = {
-           $exe = Get-FortniteExe
-           if (-not $exe) { return $false }
-           $c = Get-RegSnapshot 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers' $exe
-           return [bool]($c.Existed -and ([string]$c.Value) -match 'DISABLEDXMAXIMIZEDWINDOWEDMODE')
        } },
 
     # ================================ KBM OPTIMIZATIONS ================================
