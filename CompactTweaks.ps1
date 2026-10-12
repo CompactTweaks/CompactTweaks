@@ -15,7 +15,7 @@
 #>
 
 $script:Version = '1.3.0'
-$script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1?v=130perf150'
+$script:RawUrl  = 'https://raw.githubusercontent.com/CompactTweaks/CompactTweaks/main/CompactTweaks.ps1?v=122ntfskernel'
 
 # ----------------------------------------------------------------------------
 # Guards: Windows only, administrator, STA thread
@@ -4374,332 +4374,579 @@ function Get-PurePerformanceTweaksV12 {
 $script:Tweaks = @($script:Tweaks) + @(Get-PurePerformanceTweaksV12)
 
 # ----------------------------------------------------------------------------
-# v1.3.0 - 150 additional real performance/resource controls
-#
-# No per-game count padding. Every entry below controls a distinct Windows,
-# driver, service, scheduled-task, filesystem, network, or power mechanism.
-# Aggressive/situational settings are never Recommended by default.
-# Verified Risxn additions that were not already represented are tagged Risxn.
+# v1.3 - additional real, reversible tweaks. Same rule as v1.2: one tweak per
+# mechanism. Anything that applies to "all detected games" or "all matching
+# adapters" is ONE tweak, never one copy per game or per adapter.
 # ----------------------------------------------------------------------------
+
+function Set-NicAdvancedKeywordsV13 {
+    param([string[]]$Keywords, [string]$Value)
+    $saved = @(); $restart = @()
+    foreach ($kw in $Keywords) {
+        foreach ($p in @(Get-NicAdvancedByKeyword $kw)) {
+            $saved += @{ Name=[string]$p.Name; Keyword=$kw; Value=@($p.RegistryValue) }
+            Set-NetAdapterAdvancedProperty -Name $p.Name -RegistryKeyword $kw -RegistryValue $Value -NoRestart -ErrorAction Stop
+            $restart += [string]$p.Name
+        }
+    }
+    if ($saved.Count -eq 0) { throw 'None of your network adapters expose this option.' }
+    foreach ($n in @($restart | Select-Object -Unique)) { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue }
+    return @{ Items=$saved }
+}
+
+function Restore-NicAdvancedKeywordsV13 {
+    param($Data)
+    $restart = @()
+    foreach ($p in @($Data.Items)) {
+        Set-NetAdapterAdvancedProperty -Name ([string]$p.Name) -RegistryKeyword ([string]$p.Keyword) -RegistryValue @($p.Value) -NoRestart -ErrorAction SilentlyContinue
+        $restart += [string]$p.Name
+    }
+    foreach ($n in @($restart | Select-Object -Unique)) { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue }
+}
+
+function Test-NicAdvancedKeywordsV13 {
+    param([string[]]$Keywords, [string]$Value)
+    $any = $false
+    foreach ($kw in $Keywords) {
+        foreach ($p in @(Get-NicAdvancedByKeyword $kw)) {
+            $any = $true
+            if ([string](@($p.RegistryValue)[0]) -ne $Value) { return $false }
+        }
+    }
+    return $any
+}
+
+function Get-AmdDisplayClassKeysV13 {
+    $base = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+    $keys = @()
+    foreach ($k in @(Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue)) {
+        if ($k.PSChildName -notmatch '^\d{4}$') { continue }
+        $p = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
+        $id = [string]$p.MatchingDeviceId
+        $prov = [string]$p.ProviderName
+        if ($id -match 'VEN_1002' -or $prov -match 'Advanced Micro Devices') { $keys += $k.PSPath }
+    }
+    return $keys
+}
 
 function Get-PurePerformanceTweaksV13 {
     $out = @()
 
-    # 14 documented processor power / parking controls.
-    $cpuV13 = @(
-        @{ Id='cpu-cpconcurrency-100'; Setting='CPCONCURRENCY'; Value=100; Name='Core parking concurrency threshold: 100%'; Desc='Sets the documented Windows core-parking concurrency threshold to 100% on AC power. This changes how the parking engine detects concurrent processor demand; it is an advanced latency/performance test setting, not a guaranteed FPS gain.' },
-        @{ Id='cpu-cpdistribution-100'; Setting='CPDISTRIBUTION'; Value=100; Name='Core parking distribution threshold: 100%'; Desc='Sets the documented core-parking distribution threshold to 100% on AC power, biasing the parking engine toward distributing busy work across the available logical processors.' },
-        @{ Id='cpu-cpheadroom-0'; Setting='CPHEADROOM'; Value=0; Name='Core parking headroom: 0%'; Desc='Sets core-parking headroom to 0%, allowing the parking engine to react without reserving additional utilization headroom before considering another logical processor.' },
-        @{ Id='cpu-latency-unpark-100'; Setting='LATENCYHINTUNPARK'; Value=100; Name='Latency-hint minimum unparked cores: 100%'; Desc='When Windows raises a low-latency hint, requests that 100% of the primary processor class remain unparked.' },
-        @{ Id='cpu-latency-unpark1-100'; Setting='LATENCYHINTUNPARK1'; Value=100; Name='Latency-hint class-1 unparked cores: 100%'; Desc='On heterogeneous processors that expose the class-1 setting, requests that 100% of class-1 logical processors remain unparked during Windows low-latency hints.' },
-        @{ Id='cpu-softpark-off'; Setting='SoftParkLatency'; Value=0; Name='Soft core parking: Off'; Desc='Sets SoftParkLatency to 0 microseconds. Microsoft documents 0 as disabling soft parking, removing scheduler use of the soft-parked state on supported systems.' },
-        @{ Id='cpu-dutycycling-off'; Setting='PERFDUTYCYCLING'; Value=0; Name='Processor duty cycling: Off'; Desc='Disables processor duty cycling on systems that support it, favoring steady execution availability over power savings.' },
-        @{ Id='cpu-idle-demote-100'; Setting='IDLEDEMOTE'; Value=100; Name='CPU idle demote threshold: 100%'; Desc='Sets the documented idle demote threshold to 100%, making Windows move back toward shallower processor idle states aggressively as idleness falls.' },
-        @{ Id='cpu-idle-promote-100'; Setting='IDLEPROMOTE'; Value=100; Name='CPU idle promote threshold: 100%'; Desc='Requires very high processor idleness before Windows moves to the next deeper idle state, favoring wake responsiveness over power saving.' },
-        @{ Id='cpu-module-unpark-rr'; Setting='ModuleUnparkPolicy'; Value=1; Name='CPU module unpark policy: Round robin'; Desc='On Windows 11 systems exposing this setting, unparks logical processors across L2-sharing modules using the documented round-robin policy.' },
-        @{ Id='cpu-complex-unpark-rr'; Setting='ComplexUnparkPolicy'; Value=1; Name='CPU complex unpark policy: Round robin'; Desc='On Windows 11 systems exposing this setting, unparks logical processors across LLC-sharing complexes using the documented round-robin policy.' },
-        @{ Id='cpu-smt-unpark-rr'; Setting='SmtUnparkPolicy'; Value=2; Name='SMT unpark policy: Round robin'; Desc='On supported Windows 11 systems, uses the documented round-robin SMT thread unparking policy.' },
-        @{ Id='cpu-maxfreq-64000'; Setting='PROCFREQMAX'; Value=64000; Name='CPU maximum frequency cap: 64 GHz ceiling'; Desc='Sets the documented primary-class maximum-frequency ceiling to its allowed maximum (64000 MHz), effectively avoiding an OS power-plan frequency cap on normal desktop CPUs.' },
-        @{ Id='cpu-maxfreq1-64000'; Setting='PROCFREQMAX1'; Value=64000; Name='Hybrid class-1 maximum frequency cap: 64 GHz ceiling'; Desc='Sets the documented class-1 maximum-frequency ceiling to its allowed maximum where heterogeneous CPU controls are exposed.' }
+    # ------------------------------------------------------------------
+    # Registry-backed tweaks (snapshot / undo handled by the shared engine)
+    # ------------------------------------------------------------------
+    $reg = @(
+        @{ Id='win-toast-off'; Cat='windows'; Group='Background activity performance'; Name='Turn off app toast notifications'; Risk='Low'; Rec=$false; Laptop=$true; Restart='sign-out'
+           Desc='Turns off the pop-up toast notifications apps and Windows show in the corner. A toast appearing over an exclusive-fullscreen game can minimize it or cause a hitch, so this removes that source of interruptions. You will not see message or update banners until you turn it back on.'
+           Registry=@( (New-RegEntry 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\PushNotifications' 'ToastEnabled' 'DWord' 0) ) },
+
+        @{ Id='win-maintenance-off'; Cat='windows'; Group='Background activity performance'; Name='Turn off Automatic Maintenance'; Risk='Low'; Rec=$false; Laptop=$true; Restart='restart'
+           Desc='Stops the nightly Windows Automatic Maintenance run (disk optimization, built-in diagnostics, app updates) from starting by itself, so it cannot kick in and use disk and CPU while you play. Windows Update still works. You can still run maintenance manually from Security and Maintenance.'
+           Registry=@( (New-RegEntry 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance' 'MaintenanceDisabled' 'DWord' 1) ) },
+
+        @{ Id='win-defender-idle-scan'; Cat='windows'; Group='Background activity performance'; Name='Make Defender scans light and idle-only'; Risk='Low'; Rec=$false; Laptop=$true
+           Desc='Keeps Microsoft Defender fully on, but tells scheduled scans to use at most 10% CPU, to run only when the PC is idle, and to skip the catch-up scan after a missed schedule. Real-time protection is not changed. If Tamper Protection or a third-party antivirus overrides policy, Windows may ignore this.'
+           Registry=@(
+               (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Scan' 'AvgCPULoadFactor' 'DWord' 10),
+               (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Scan' 'ScanOnlyIfIdle' 'DWord' 1),
+               (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Scan' 'DisableCatchupFullScan' 'DWord' 1),
+               (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Scan' 'DisableCatchupQuickScan' 'DWord' 1)
+           ) },
+
+        @{ Id='win-smartscreen-off'; Cat='windows'; Group='System settings'; Name='Turn off SmartScreen reputation checks'; Risk='High'; Rec=$false; Laptop=$false; Restart='sign-out'
+           Desc='Stops Windows asking Microsoft''s servers whether each downloaded program and website is known to be safe. That removes a small delay when launching newly downloaded files, but it also removes a real protection against malware. Only use this if you are careful about what you download.'
+           Registry=@(
+               (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'EnableSmartScreen' 'DWord' 0),
+               (New-RegEntry 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' 'SmartScreenEnabled' 'String' 'Off')
+           ) },
+
+        @{ Id='win-teams-chat-off'; Cat='windows'; Group='Background activity performance'; Name='Turn off the Windows 11 Chat / Teams icon'; Risk='Low'; Rec=$true; Laptop=$true; MinBuild=22000; Restart='sign-out'
+           Desc='Removes the Chat (consumer Teams) taskbar icon and stops its background process from starting with Windows. It does not affect work or school Teams.'
+           Registry=@( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Chat' 'ChatIcon' 'DWord' 3) ) },
+
+        @{ Id='win-typing-insights-off'; Cat='windows'; Group='Telemetry and diagnostics'; Name='Turn off typing and inking data collection'; Risk='Low'; Rec=$false; Laptop=$true; Restart='sign-out'
+           Desc='Stops Windows from learning from what you type and write to build personalization data, and turns off typing insights. This removes background text-collection work; autocorrect still works but will not personalize.'
+           Registry=@(
+               (New-RegEntry 'HKCU:\SOFTWARE\Microsoft\Input\Settings' 'InsightsEnabled' 'DWord' 0),
+               (New-RegEntry 'HKCU:\SOFTWARE\Microsoft\InputPersonalization' 'RestrictImplicitTextCollection' 'DWord' 1),
+               (New-RegEntry 'HKCU:\SOFTWARE\Microsoft\InputPersonalization' 'RestrictImplicitInkCollection' 'DWord' 1),
+               (New-RegEntry 'HKCU:\SOFTWARE\Microsoft\InputPersonalization\TrainedDataStore' 'HarvestContacts' 'DWord' 0)
+           ) },
+
+        @{ Id='win-speech-update-off'; Cat='windows'; Group='Telemetry and diagnostics'; Name='Stop automatic speech model downloads'; Risk='Low'; Rec=$false; Laptop=$true
+           Desc='Stops Windows downloading and updating speech-recognition models in the background. Voice typing and Cortana-style dictation keep working with the models you already have.'
+           Registry=@( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Speech' 'AllowSpeechModelUpdate' 'DWord' 0) ) },
+
+        @{ Id='win-autologger-diagtrack'; Cat='windows'; Group='Telemetry and diagnostics'; Name='Stop the telemetry trace loggers at boot'; Risk='Low'; Rec=$false; Laptop=$true; Restart='restart'
+           Desc='Switches off two Windows event-trace sessions (the Diagtrack listener and the SQM logger) that start at boot and write telemetry data to disk. This is separate from the Connected User Experiences service, so it removes a second source of background writes. Undo restores the original start values.'
+           Registry=@(
+               (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\WMI\Autologger\AutoLogger-Diagtrack-Listener' 'Start' 'DWord' 0),
+               (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\WMI\Autologger\SQMLogger' 'Start' 'DWord' 0)
+           ) },
+
+        @{ Id='win-energy-estimation-off'; Cat='windows'; Group='Telemetry and diagnostics'; Name='Turn off energy estimation engine'; Risk='Low'; Rec=$false; Laptop=$false; Restart='restart'
+           Desc='Turns off the Windows energy-estimation and event-processing engine that tracks per-app power use. Battery usage breakdowns in Settings stop being accurate, so skip this on a laptop. On a desktop it only removes background bookkeeping.'
+           Registry=@(
+               (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'EnergyEstimationEnabled' 'DWord' 0),
+               (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'EventProcessorEnabled' 'DWord' 0)
+           ) },
+
+        @{ Id='win-onedrive-sync-off'; Cat='windows'; Group='Cloud and sync'; Name='Turn off OneDrive file syncing'; Risk='Medium'; Rec=$false; Laptop=$true; Restart='sign-out'
+           Desc='Blocks OneDrive from syncing files at all, which stops its background disk, CPU and upload activity. Anything that was only in OneDrive stays in the cloud and is not downloaded or backed up from this PC while this is on. Do not use this if you rely on OneDrive for backup.'
+           Registry=@( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OneDrive' 'DisableFileSyncNGSC' 'DWord' 1) ) },
+
+        @{ Id='win-store-autodownload-off'; Cat='windows'; Group='Background activity performance'; Name='Stop automatic Microsoft Store app updates'; Risk='Low'; Rec=$false; Laptop=$true
+           Desc='Stops the Microsoft Store downloading app updates by itself, so large background downloads do not compete with your game for bandwidth and disk. Update Store apps by hand from the Library page when you want.'
+           Registry=@( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore' 'AutoDownload' 'DWord' 2) ) },
+
+        @{ Id='win-storage-sense-off'; Cat='windows'; Group='Background activity performance'; Name='Turn off Storage Sense'; Risk='Low'; Rec=$false; Laptop=$true
+           Desc='Stops Storage Sense from running automatic cleanups (recycle bin, temp files, downloads) in the background. Disk space is not freed for you any more, so clear space yourself when needed.'
+           Registry=@( (New-RegEntry 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy' '01' 'DWord' 0) ) },
+
+        @{ Id='win-autoendtasks'; Cat='windows'; Group='Startup and shutdown'; Name='Close hung apps automatically at sign-out'; Risk='Medium'; Rec=$false; Laptop=$true; Restart='sign-out'
+           Desc='Makes Windows close apps that are not responding at sign-out and shutdown without showing the End Task prompt, and drops the low-level hook timeout so a stuck overlay or input hook cannot freeze input for as long. Apps that were still saving may lose unsaved work. Affects shutdown and hook handling, not FPS directly.'
+           Registry=@(
+               (New-RegEntry 'HKCU:\Control Panel\Desktop' 'AutoEndTasks' 'String' '1'),
+               (New-RegEntry 'HKCU:\Control Panel\Desktop' 'LowLevelHooksTimeout' 'String' '1000')
+           ) },
+
+        @{ Id='win-shared-experiences-off'; Cat='windows'; Group='Background activity performance'; Name='Turn off Shared Experiences and Nearby Sharing'; Risk='Low'; Rec=$false; Laptop=$true; Restart='sign-out'
+           Desc='Turns off the Connected Devices Platform features that look for nearby PCs and phones (continue on another device, Nearby Sharing, cross-device clipboard prompts). This stops a background discovery process; sending things to other devices through these features stops working.'
+           Registry=@(
+               (New-RegEntry 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\CDP' 'CdpSessionUserAuthzPolicy' 'DWord' 0),
+               (New-RegEntry 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\CDP' 'NearShareChannelUserAuthzPolicy' 'DWord' 0),
+               (New-RegEntry 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\CDP' 'RomeSdkChannelUserAuthzPolicy' 'DWord' 0),
+               (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'EnableCdp' 'DWord' 0)
+           ) },
+
+        @{ Id='win-wpbt-off'; Cat='windows'; Group='Startup and shutdown'; Name='Block OEM firmware from installing programs at boot (WPBT)'; Risk='Medium'; Rec=$false; Laptop=$false; Restart='restart'
+           Desc='Windows Platform Binary Table lets some motherboard and laptop firmware silently drop a program into Windows at every boot, which is how some OEM tools reinstall themselves after you remove them. This blocks that. OEM utilities that rely on it (some RGB, driver-updater and vendor helper tools) stop being auto-installed.'
+           Registry=@( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' 'DisableWpbtExecution' 'DWord' 1) ) },
+
+        @{ Id='kernel-fth-off'; Cat='cpu'; Group='Latency and kernel'; Name='Turn off the Fault Tolerant Heap'; Risk='Low'; Rec=$false; Laptop=$true; Restart='restart'
+           Desc='The Fault Tolerant Heap quietly adds padding and slower memory handling to any program that crashed several times, and keeps doing so afterwards. A game that crashed a few times can end up running with it. This turns the feature off so every program uses the normal fast heap. The downside is that an app that was being auto-rescued will crash again instead of being patched around.'
+           Registry=@( (New-RegEntry 'HKLM:\SOFTWARE\Microsoft\FTH' 'Enabled' 'DWord' 0) ) },
+
+        @{ Id='mmcss-audio-class'; Cat='cpu'; Group='Latency and kernel'; Name='Raise the audio scheduling class (MMCSS)'; Risk='Low'; Rec=$false; Laptop=$true; Restart='restart'
+           Desc='Moves the Windows multimedia scheduler Audio task from Medium to High scheduling category so audio threads are less likely to crackle or stutter when the CPU is saturated by a game. This targets audio glitching under load; it does not raise FPS.'
+           Registry=@( (New-RegEntry 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Audio' 'Scheduling Category' 'String' 'High') ) },
+
+        @{ Id='mmcss-nolazy'; Cat='cpu'; Group='Latency and kernel'; Name='Keep the multimedia scheduler always active'; Risk='Low'; Rec=$false; Laptop=$false; Restart='restart'
+           Desc='Sets the MMCSS NoLazyMode and AlwaysOn values so the multimedia scheduler does not go into its idle "lazy" mode between bursts. Expect little to no change in FPS; this is a latency-consistency option and can slightly raise idle CPU use.'
+           Registry=@(
+               (New-RegEntry 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NoLazyMode' 'DWord' 1),
+               (New-RegEntry 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'AlwaysOn' 'DWord' 1)
+           ) },
+
+        @{ Id='net-prefer-ipv4'; Cat='net'; Group='Network stack'; Name='Prefer IPv4 over IPv6'; Risk='Medium'; Rec=$false; Laptop=$true; Restart='restart'
+           Desc='Uses Microsoft''s documented DisabledComponents setting to make Windows try IPv4 before IPv6 without turning IPv6 off. On networks where IPv6 is slow or misconfigured, game servers and downloads connect faster. If your ISP is IPv6-only for some services, those still work through the fallback.'
+           Registry=@( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents' 'DWord' 32) ) },
+
+        @{ Id='net-ipv6-tunnels-off'; Cat='net'; Group='Network stack'; Name='Turn off Teredo, 6to4 and ISATAP tunnels'; Risk='Medium'; Rec=$false; Laptop=$true; Restart='restart'
+           Desc='Turns off the IPv6-over-IPv4 tunnelling adapters Windows keeps ready in the background. Native IPv6 and IPv4 are not affected. Some Xbox / Game Pass party-chat and a few older peer-to-peer games use Teredo to get through NAT, so skip this if those matter to you.'
+           Registry=@(
+               (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition' 'Teredo_State' 'String' 'Disabled'),
+               (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition' '6to4_State' 'String' 'Disabled'),
+               (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\TCPIP\v6Transition' 'ISATAP_State' 'String' 'Disabled')
+           ) },
+
+        @{ Id='net-llmnr-off'; Cat='net'; Group='Network stack'; Name='Turn off LLMNR name broadcasts'; Risk='Low'; Rec=$false; Laptop=$true; Restart='restart'
+           Desc='Stops Windows sending Link-Local Multicast Name Resolution queries when a DNS lookup fails. That removes a delay on failed lookups and some local-network chatter, and it closes a known name-spoofing weakness. Normal DNS keeps working; very old home networks that resolve names without DNS may need it.'
+           Registry=@( (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast' 'DWord' 0) ) },
+
+        @{ Id='net-mdns-off'; Cat='net'; Group='Network stack'; Name='Turn off mDNS multicast name resolution'; Risk='Low'; Rec=$false; Laptop=$true; Restart='restart'
+           Desc='Stops the Windows DNS client sending mDNS (multicast DNS) queries to the local network. Printers, TVs and some smart-home devices that use .local names may stop being found by name. Internet DNS is unaffected.'
+           Registry=@( (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' 'EnableMDNS' 'DWord' 0) ) },
+
+        @{ Id='net-tcp-timedwait'; Cat='net'; Group='TCP stack'; Name='Shorter TCP TIME_WAIT and wider port range'; Risk='Low'; Rec=$false; Laptop=$true; Restart='restart'
+           Desc='Releases closed TCP connections after 30 seconds instead of 120 and allows the full 65534 outgoing ports. This only helps when something opens and closes a very large number of connections quickly (heavy torrenting, many browser tabs, a game launcher plus patching). For a single game it makes little difference.'
+           Registry=@(
+               (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'TcpTimedWaitDelay' 'DWord' 30),
+               (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'MaxUserPort' 'DWord' 65534)
+           ) },
+
+        @{ Id='gpu-tdr-delay'; Cat='gpu'; Group='Stutter troubleshooting'; Name='Longer GPU timeout (TDR delay)'; Risk='Low'; Rec=$false; Laptop=$true; Restart='restart'
+           Desc='Raises the Windows GPU timeout detection from 2 seconds to 10. When a heavy shader compile or a long GPU task takes longer than 2 seconds, Windows normally resets the driver and the game crashes or the screen flashes; with 10 seconds it waits instead. This is a stability fix for driver-timeout crashes, not an FPS boost.'
+           Registry=@(
+               (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'TdrDelay' 'DWord' 10),
+               (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'TdrDdiDelay' 'DWord' 10)
+           ) },
+
+        @{ Id='aim-pointer-speed-default'; Cat='aim'; Group='Mouse'; Name='Set pointer speed to the 1:1 setting (6/11)'; Risk='Low'; Rec=$true; Laptop=$true; Restart='sign-out'
+           Desc='Sets the Windows pointer speed slider to the middle notch (6 of 11). That is the only notch where Windows moves the pointer exactly one count per mouse count; every other notch scales movement up or down. Use your mouse DPI and in-game sensitivity for speed instead. Pair it with turning Enhance pointer precision off.'
+           Registry=@( (New-RegEntry 'HKCU:\Control Panel\Mouse' 'MouseSensitivity' 'String' '10') ) }
     )
-    foreach ($x in $cpuV13) {
-        $setting = [string]$x.Setting
-        $value = [int]$x.Value
-        $guard = { Test-PowerCfgSettingAvailable 'SUB_PROCESSOR' $setting }.GetNewClosure()
-        $apply = { Set-ActivePowerCfgAcValue 'SUB_PROCESSOR' $setting $value }.GetNewClosure()
-        $undo = { param($D) Restore-PowerCfgAcValue $D }.GetNewClosure()
-        $test = { Test-PowerCfgAcValue 'SUB_PROCESSOR' $setting $value }.GetNewClosure()
+
+    foreach ($x in $reg) {
+        $t = @{
+            Id=$x.Id; Category=$x.Cat; Group=$x.Group; Name=$x.Name; Risk=$x.Risk
+            Recommended=[bool]$x.Rec; Desc=$x.Desc; Registry=$x.Registry
+        }
+        if ($x.Laptop) { $t.IsLaptopSafe = $true }
+        if ($x.Restart) { $t.Restart = $x.Restart }
+        if ($x.MinBuild) { $mb = [int]$x.MinBuild; $t.Guard = { (Get-WinBuild) -ge $mb }.GetNewClosure() }
+        $out += $t
+    }
+
+    # ------------------------------------------------------------------
+    # Individual services (hidden when the service does not exist)
+    # ------------------------------------------------------------------
+    $svc = @(
+        @{ Id='svc-dmwappush'; Names=@('dmwappushservice'); Name='Disable WAP Push Message Routing'; Risk='Low'; Desc='Stops the service that routes push messages for telemetry and mobile-device management. Normal PCs never need it.' },
+        @{ Id='svc-diaghub'; Names=@('diagnosticshub.standardcollector.service'); Name='Disable Diagnostics Hub collector'; Risk='Low'; Desc='Stops the Diagnostics Hub Standard Collector, which gathers performance traces for developer tools. Skip it if you profile apps with Visual Studio or Windows Performance Recorder.' },
+        @{ Id='svc-pcasvc'; Names=@('PcaSvc'); Name='Disable Program Compatibility Assistant'; Risk='Low'; Desc='Stops the service that watches old programs and offers compatibility fixes after they misbehave. You lose the "this program might not have installed correctly" prompts.' },
+        @{ Id='svc-wecsvc'; Names=@('Wecsvc'); Name='Disable Windows Event Collector'; Risk='Low'; Desc='Stops the service that collects events from other computers. Only useful on managed networks.' },
+        @{ Id='svc-workfolders'; Names=@('workfolderssvc'); Name='Disable Work Folders'; Risk='Low'; Desc='Stops the Work Folders sync client used in some company setups. Normal home PCs do not use it.' },
+        @{ Id='svc-seclogon'; Names=@('seclogon'); Name='Disable Secondary Logon'; Risk='Medium'; Desc='Stops the service behind "Run as a different user". Right-click run-as-another-user stops working until you undo this.' },
+        @{ Id='svc-stisvc'; Names=@('StiSvc'); Name='Disable Windows Image Acquisition'; Risk='Medium'; Desc='Stops scanner and some camera import support. Do not apply if you use a scanner or import photos with Windows from cameras.' },
+        @{ Id='svc-fdrespub'; Names=@('FDResPub'); Name='Disable Function Discovery Resource Publication'; Risk='Low'; Desc='Stops this PC advertising itself and its shared folders to other PCs on the local network. Other PCs can still be seen from here.' },
+        @{ Id='svc-lltdsvc'; Names=@('lltdsvc'); Name='Disable Link-Layer Topology Discovery Mapper'; Risk='Low'; Desc='Stops the service that draws the network map. Only used for the old Network Map view.' },
+        @{ Id='svc-webclient'; Names=@('WebClient'); Name='Disable WebDAV client'; Risk='Low'; Desc='Stops Windows from mapping WebDAV web folders as drives. It is also a known attack path, so disabling it is a harmless hardening step for most users.' },
+        @{ Id='svc-msiscsi'; Names=@('MSiSCSI'); Name='Disable iSCSI Initiator'; Risk='Low'; Desc='Stops iSCSI network-storage support. Do not apply if you connect to a NAS or SAN over iSCSI.' },
+        @{ Id='svc-axinstsv'; Names=@('AxInstSV'); Name='Disable ActiveX Installer'; Risk='Low'; Desc='Stops the ActiveX Installer service, which is only used by very old Internet Explorer-era sites.' },
+        @{ Id='svc-cscservice'; Names=@('CscService'); Name='Disable Offline Files'; Risk='Low'; Desc='Stops Offline Files, which caches network-share files on this PC. Only used on some work networks.' },
+        @{ Id='svc-winrm'; Names=@('WinRM'); Name='Disable Windows Remote Management'; Risk='Low'; Desc='Stops remote PowerShell and WinRM management. Do not apply if you manage this PC remotely.' },
+        @{ Id='svc-sdrsvc'; Names=@('SDRSVC'); Name='Disable Windows Backup service'; Risk='Medium'; Desc='Stops the old Backup and Restore (Windows 7) service. Do not apply if you use that tool for backups or restore points from it.' },
+        @{ Id='svc-scpolicysvc'; Names=@('SCPolicySvc'); Name='Disable Smart Card Removal Policy'; Risk='Low'; Desc='Stops the service that locks the PC when a smart card is removed. Normal PCs do not use it.' },
+        @{ Id='svc-wbengine'; Names=@('wbengine'); Name='Disable Block Level Backup Engine'; Risk='Medium'; Desc='Stops the engine behind Windows image backups. Do not apply if you make system image backups.' },
+        @{ Id='svc-lanmanserver'; Names=@('LanmanServer'); Name='Disable Server (file and printer sharing host)'; Risk='Medium'; Desc='Stops this PC sharing its folders and printers with other computers. You can still reach other PCs. Do not apply if you share anything from this PC.' },
+        @{ Id='svc-bluetooth'; Names=@('bthserv','BTAGService','BthAvctpSvc'); Name='Disable Bluetooth services'; Risk='Medium'; Desc='Stops the Bluetooth support, audio gateway and AVRCP services. Bluetooth mice, keyboards, headphones and controllers will stop working. Only for a PC that is fully wired.' },
+        @{ Id='svc-remote-desktop'; Names=@('TermService','UmRdpService','SessionEnv'); Name='Disable Remote Desktop services'; Risk='Medium'; Desc='Stops incoming Remote Desktop connections and the helper services that go with them. You can still use Remote Desktop to connect out to other PCs.' },
+        @{ Id='svc-peer-networking'; Names=@('PNRPsvc','p2psvc','p2pimsvc','PNRPAutoReg'); Name='Disable Peer Networking services'; Risk='Low'; Desc='Stops the old peer-name-resolution and peer-grouping services. Almost nothing on a modern PC uses them.' }
+    )
+    foreach ($x in $svc) {
+        $names = @($x.Names)
+        $guard = {
+            foreach ($n in $names) {
+                if (Get-CimInstance Win32_Service -Filter ("Name='" + ([string]$n).Replace("'", "''") + "'") -ErrorAction SilentlyContinue) { return $true }
+            }
+            return $false
+        }.GetNewClosure()
+        $list = @()
+        foreach ($n in $names) { $list += @{ Name=[string]$n; Mode='Disabled' } }
         $out += @{
-            Id=('v13-' + [string]$x.Id); Category='cpu'; Group='Advanced processor performance'
-            Name=[string]$x.Name; Risk='Medium'; Recommended=$false; Desc=[string]$x.Desc
-            Guard=$guard; Apply=$apply; Undo=$undo; Test=$test
+            Id=$x.Id; Category='debloat'; Group='Individual background services'; Name=$x.Name; Risk=$x.Risk; Recommended=$false
+            Desc=($x.Desc + ' Start mode is saved first and Undo restores it exactly.')
+            Guard=$guard; Services=$list
         }
     }
 
-    # Risxn: USB 3 Link Power Management. This is distinct from USB selective suspend.
-    $usbSub = '2a737441-1930-4402-8d77-b2bebba308a3'
-    $usb3Lpm = 'd4e98f31-5ffe-4ce1-be31-1b38b384c009'
-    $usbGuard = { Test-PowerCfgSettingAvailable $usbSub $usb3Lpm }.GetNewClosure()
-    $usbApply = { Set-ActivePowerCfgAcValue $usbSub $usb3Lpm 0 }.GetNewClosure()
-    $usbUndo = { param($D) Restore-PowerCfgAcValue $D }.GetNewClosure()
-    $usbTest = { Test-PowerCfgAcValue $usbSub $usb3Lpm 0 }.GetNewClosure()
-    $out += @{
-        Id='v13-risxn-usb3-lpm-off'; Category='kbm'; Group='USB tweaks';
-        Name='USB 3 Link Power Management: Off (Risxn)'; Risk='Medium'; Recommended=$false;
-        Desc='Disables the separate USB 3 link-level power-management setting on AC power where Windows exposes it. This avoids USB 3 link power-state transitions at the cost of higher idle power. It is independent of the existing USB selective-suspend tweak.';
-        Guard=$usbGuard; Apply=$usbApply; Undo=$usbUndo; Test=$usbTest
-    }
-
-    # 40 driver-advertised NIC controls. They are hidden when the adapter/driver
-    # does not expose both the property and a compatible target value.
-    $nicV13 = @(
-        @{ Id='int-mod-rate-off'; Pattern='(?i)^Interrupt Moderation Rate$'; Want='(?i)Disabled|Off'; Name='Interrupt Moderation Rate: Off'; Desc='Adjusts the adapter''s Interrupt Moderation Rate driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='d0-coalescing-off'; Pattern='(?i)D0.*Packet Coalescing|Packet Coalescing.*D0'; Want='(?i)Disabled|Off'; Name='D0 Packet Coalescing: Off'; Desc='Adjusts the adapter''s D0 Packet Coalescing driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='link-down-power-off'; Pattern='(?i)Link Down Power Sav'; Want='(?i)Disabled|Off'; Name='Link Down Power Saving: Off'; Desc='Adjusts the adapter''s Link Down Power Saving driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='auto-power-save-off'; Pattern='(?i)Auto.*Power Sav'; Want='(?i)Disabled|Off'; Name='Automatic NIC power saving: Off'; Desc='Adjusts the adapter''s Automatic NIC power saving driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='sleep-disconnect-off'; Pattern='(?i)^Device Sleep On Disconnect$'; Want='(?i)Disabled|Off'; Name='NIC sleep on disconnect: Off'; Desc='Adjusts the adapter''s NIC sleep on disconnect driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='selective-suspend-off'; Pattern='(?i)^Selective Suspend$'; Want='(?i)Disabled|Off'; Name='NIC Selective Suspend: Off'; Desc='Adjusts the adapter''s NIC Selective Suspend driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='pme-off'; Pattern='(?i)^PME Enable$|Power Management Event'; Want='(?i)Disabled|Off'; Name='NIC PME wake signaling: Off'; Desc='Adjusts the adapter''s NIC PME wake signaling driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='wake-link-off'; Pattern='(?i)Wake.*Link (Change|Status)'; Want='(?i)Disabled|Off'; Name='Wake on link change: Off'; Desc='Adjusts the adapter''s Wake on link change driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='shutdown-wol-off'; Pattern='(?i)Shutdown.*Wake.*LAN|Wake.*Shutdown.*LAN'; Want='(?i)Disabled|Off'; Name='Shutdown Wake-on-LAN: Off'; Desc='Adjusts the adapter''s Shutdown Wake-on-LAN driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='wake-from-shutdown-off'; Pattern='(?i)^Wake From Shutdown$'; Want='(?i)Disabled|Off'; Name='Wake From Shutdown: Off'; Desc='Adjusts the adapter''s Wake From Shutdown driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='wowlan-arp-off'; Pattern='(?i)ARP.*WoWLAN|WoWLAN.*ARP'; Want='(?i)Disabled|Off'; Name='WoWLAN ARP offload: Off'; Desc='Adjusts the adapter''s WoWLAN ARP offload driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='wowlan-ns-off'; Pattern='(?i)NS.*WoWLAN|WoWLAN.*NS'; Want='(?i)Disabled|Off'; Name='WoWLAN NS offload: Off'; Desc='Adjusts the adapter''s WoWLAN NS offload driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='wowlan-gtk-off'; Pattern='(?i)GTK.*WoWLAN|WoWLAN.*GTK'; Want='(?i)Disabled|Off'; Name='WoWLAN GTK rekeying: Off'; Desc='Adjusts the adapter''s WoWLAN GTK rekeying driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='wowlan-sleep-off'; Pattern='(?i)Sleep.*WoWLAN.*Disconnect|WoWLAN.*Disconnect'; Want='(?i)Disabled|Off'; Name='WoWLAN disconnect sleep: Off'; Desc='Adjusts the adapter''s WoWLAN disconnect sleep driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='throughput-booster-on'; Pattern='(?i)Throughput Booster|Throughput Enhancement'; Want='(?i)Enabled|On'; Name='Wi-Fi Throughput Booster: On'; Desc='Adjusts the adapter''s Wi-Fi Throughput Booster driver control for a latency/throughput-oriented desktop gaming profile. This is hardware/driver dependent and may trade battery life, roaming behavior, or compatibility for steadier performance.' },
-        @{ Id='roaming-lowest'; Pattern='(?i)^Roaming Aggressiveness$'; Want='(?i)Lowest|1\.'; Name='Wi-Fi roaming aggressiveness: Lowest'; Desc='Adjusts the adapter''s Wi-Fi roaming aggressiveness driver control for a latency/throughput-oriented desktop gaming profile. This is hardware/driver dependent and may trade battery life, roaming behavior, or compatibility for steadier performance.' },
-        @{ Id='preferred-band'; Pattern='(?i)^Preferred Band$'; Want='(?i)Prefer.*(5|6).*GHz|5.*GHz|6.*GHz'; Name='Wi-Fi preferred band: 5/6 GHz'; Desc='Adjusts the adapter''s Wi-Fi preferred band driver control for a latency/throughput-oriented desktop gaming profile. This is hardware/driver dependent and may trade battery life, roaming behavior, or compatibility for steadier performance.' },
-        @{ Id='width-24-auto'; Pattern='(?i)Channel Width.*2\.4|2\.4.*Channel Width'; Want='(?i)Auto'; Name='Wi-Fi 2.4 GHz channel width: Auto'; Desc='Adjusts the adapter''s Wi-Fi 2.4 GHz channel width driver control for a latency/throughput-oriented desktop gaming profile. This is hardware/driver dependent and may trade battery life, roaming behavior, or compatibility for steadier performance.' },
-        @{ Id='width-5-auto'; Pattern='(?i)Channel Width.*5\s*GHz|5\s*GHz.*Channel Width'; Want='(?i)Auto'; Name='Wi-Fi 5 GHz channel width: Auto'; Desc='Adjusts the adapter''s Wi-Fi 5 GHz channel width driver control for a latency/throughput-oriented desktop gaming profile. This is hardware/driver dependent and may trade battery life, roaming behavior, or compatibility for steadier performance.' },
-        @{ Id='width-6-auto'; Pattern='(?i)Channel Width.*6\s*GHz|6\s*GHz.*Channel Width'; Want='(?i)Auto'; Name='Wi-Fi 6 GHz channel width: Auto'; Desc='Adjusts the adapter''s Wi-Fi 6 GHz channel width driver control for a latency/throughput-oriented desktop gaming profile. This is hardware/driver dependent and may trade battery life, roaming behavior, or compatibility for steadier performance.' },
-        @{ Id='bgscan-block'; Pattern='(?i)Global.*BG.*Scan.*Block|BG.*Scan.*Block'; Want='(?i)Always|Enabled|On'; Name='Wi-Fi background scan blocking: On'; Desc='Adjusts the adapter''s Wi-Fi background scan blocking driver control for a latency/throughput-oriented desktop gaming profile. This is hardware/driver dependent and may trade battery life, roaming behavior, or compatibility for steadier performance.' },
-        @{ Id='background-scan-off'; Pattern='(?i)^Background Scan$|Background Scanning'; Want='(?i)Disabled|Off'; Name='Wi-Fi background scanning: Off'; Desc='Adjusts the adapter''s Wi-Fi background scanning driver control for a latency/throughput-oriented desktop gaming profile. This is hardware/driver dependent and may trade battery life, roaming behavior, or compatibility for steadier performance.' },
-        @{ Id='wifi-11n-on'; Pattern='(?i)^802\.11n Mode$|^HT Mode$'; Want='(?i)Enabled|On'; Name='Wi-Fi 802.11n / HT mode: On'; Desc='Keeps the adapter''s 802.11n/HT performance mode enabled where the driver exposes a separate switch. This preserves higher-throughput Wi-Fi PHY operation instead of legacy-only modes.' },
-        @{ Id='wifi-vht-he-on'; Pattern='(?i)^802\.11(ac|ax) Mode$|^(VHT|HE) Mode$'; Want='(?i)Enabled|On'; Name='Wi-Fi 802.11ac/ax (VHT/HE) mode: On'; Desc='Keeps supported 802.11ac/ax high-throughput PHY modes enabled where the adapter exposes them as a separate switch.' },
-        @{ Id='uso-ipv4-off'; Pattern='(?i)UDP Segmentation Offload.*IPv4|USO.*IPv4'; Want='(?i)Disabled|Off'; Name='UDP Segmentation Offload IPv4: Off'; Desc='Adjusts the adapter''s UDP Segmentation Offload IPv4 feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='uso-ipv6-off'; Pattern='(?i)UDP Segmentation Offload.*IPv6|USO.*IPv6'; Want='(?i)Disabled|Off'; Name='UDP Segmentation Offload IPv6: Off'; Desc='Adjusts the adapter''s UDP Segmentation Offload IPv6 feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='ipsec-offload-off'; Pattern='(?i)IPsec.*Offload'; Want='(?i)Disabled|Off'; Name='IPsec Offload: Off'; Desc='Adjusts the adapter''s IPsec Offload feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='tcp-connection-offload-off'; Pattern='(?i)TCP Connection.*Offload'; Want='(?i)Disabled|Off'; Name='TCP Connection Offload: Off'; Desc='Adjusts the adapter''s TCP Connection Offload feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='tcp-offload-engine-off'; Pattern='(?i)TCP Offload Engine|TOE$'; Want='(?i)Disabled|Off'; Name='TCP Offload Engine: Off'; Desc='Adjusts the adapter''s TCP Offload Engine feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='header-data-split-off'; Pattern='(?i)Header Data Split|HDS$'; Want='(?i)Disabled|Off'; Name='Header Data Split: Off'; Desc='Adjusts the adapter''s Header Data Split driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='encap-task-offload-off'; Pattern='(?i)Encapsulated.*Task Offload'; Want='(?i)Disabled|Off'; Name='Encapsulated Packet Task Offload: Off'; Desc='Adjusts the adapter''s Encapsulated Packet Task Offload feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='vmq-off'; Pattern='(?i)Virtual Machine Queues?|VMQ'; Want='(?i)Disabled|Off'; Name='Virtual Machine Queue: Off'; Desc='Adjusts the adapter''s Virtual Machine Queue feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='sriov-off'; Pattern='(?i)SR-IOV|Single Root.*Virtual'; Want='(?i)Disabled|Off'; Name='SR-IOV: Off'; Desc='Adjusts the adapter''s SR-IOV feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='rdma-off'; Pattern='(?i)^RDMA$|Remote Direct Memory Access'; Want='(?i)Disabled|Off'; Name='RDMA: Off'; Desc='Adjusts the adapter''s RDMA feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='packet-direct-off'; Pattern='(?i)Packet Direct'; Want='(?i)Disabled|Off'; Name='Packet Direct: Off'; Desc='Adjusts the adapter''s Packet Direct feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='ptp-timestamp-off'; Pattern='(?i)PTP.*Hardware Timestamp'; Want='(?i)Disabled|Off'; Name='PTP hardware timestamping: Off'; Desc='Adjusts the adapter''s PTP hardware timestamping driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='software-timestamp-off'; Pattern='(?i)Software Timestamp'; Want='(?i)Disabled|Off'; Name='Software timestamping: Off'; Desc='Adjusts the adapter''s Software timestamping driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' },
-        @{ Id='network-direct-off'; Pattern='(?i)^Network Direct$|NetworkDirect'; Want='(?i)Disabled|Off'; Name='Network Direct: Off'; Desc='Adjusts the adapter''s Network Direct feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='rss-profile-closest'; Pattern='(?i)RSS.*(Load Balancing )?Profile'; Want='(?i)Closest Processor|ClosestProcessor'; Name='RSS profile: Closest Processor'; Desc='Adjusts the adapter''s RSS profile feature. Disabling batching/virtualization/offload features can reduce latency variance on some NICs but can also increase CPU usage or reduce peak throughput; benchmark before keeping it.' },
-        @{ Id='receive-throttle-off'; Pattern='(?i)Receive Throttling|Rx Throttling'; Want='(?i)Disabled|Off'; Name='Receive throttling: Off'; Desc='Adjusts the adapter''s Receive throttling driver feature to favor readiness/latency over power saving or packet batching where the hardware exposes it.' }
+    # ------------------------------------------------------------------
+    # Scheduled-task groups (each group is one tweak)
+    # ------------------------------------------------------------------
+    $taskGroups = @(
+        @{ Id='task-sysmain'; Name='Disable SysMain scheduled tasks'; Paths=@('\Microsoft\Windows\Sysmain\ResPriStaticDbSync','\Microsoft\Windows\Sysmain\WsSwapAssessmentTask'); Desc='Stops the two scheduled tasks that feed SysMain (Superfetch) with resource-priority and swap data. Pairs with turning SysMain off.' },
+        @{ Id='task-memory-diagnostic'; Name='Disable memory diagnostic scheduled tasks'; Paths=@('\Microsoft\Windows\MemoryDiagnostic\ProcessMemoryDiagnosticEvents','\Microsoft\Windows\MemoryDiagnostic\RunFullMemoryDiagnostic'); Desc='Stops scheduled memory-diagnostic collection. You can still run Windows Memory Diagnostic by hand.' },
+        @{ Id='task-flighting'; Name='Disable feature-flighting scheduled tasks'; Paths=@('\Microsoft\Windows\Flighting\FeatureConfig\ReconcileFeatures','\Microsoft\Windows\Flighting\OneSettings\RefreshCache'); Desc='Stops the tasks that download Microsoft feature-rollout settings (what features your PC gets and when). Keeps Windows behavior more predictable.' },
+        @{ Id='task-office-telemetry'; Name='Disable Office telemetry scheduled tasks'; Paths=@('\Microsoft\Office\OfficeTelemetryAgentFallBack2016','\Microsoft\Office\OfficeTelemetryAgentLogOn2016','\Microsoft\Office\OfficeTelemetryAgentFallBack','\Microsoft\Office\OfficeTelemetryAgentLogOn'); Desc='Stops Microsoft Office from running its telemetry agent at logon. Only shown when Office is installed.' },
+        @{ Id='task-speech-model'; Name='Disable speech model download task'; Paths=@('\Microsoft\Windows\Speech\SpeechModelDownloadTask'); Desc='Stops the scheduled task that downloads speech-recognition model updates.' },
+        @{ Id='task-xbox-gamesave'; Name='Disable Xbox game-save sync task'; Paths=@('\Microsoft\XblGameSave\XblGameSaveTask'); Desc='Stops the scheduled Xbox cloud-save sync task. Skip it if you use Game Pass or Xbox titles with cloud saves.' },
+        @{ Id='task-indexer-maintenance'; Name='Disable search indexer maintenance task'; Paths=@('\Microsoft\Windows\Shell\IndexerAutomaticMaintenance'); Desc='Stops the scheduled search-index maintenance run. Search still works; the index is just not tidied on a schedule.' },
+        @{ Id='task-diskfootprint'; Name='Disable disk footprint diagnostics task'; Paths=@('\Microsoft\Windows\DiskFootprint\Diagnostics'); Desc='Stops the scheduled disk-usage diagnostics collection.' }
     )
-    foreach ($x in $nicV13) {
-        $pattern = [string]$x.Pattern
-        $want = [string]$x.Want
+    foreach ($x in $taskGroups) {
+        $paths = @($x.Paths)
         $guard = {
-            foreach ($p in @(Get-NicAdvancedByDisplayNamePatternV11 $pattern)) {
-                if (Get-NicMatchingDisplayValueV11 $p $want) { return $true }
+            foreach ($p in $paths) {
+                $folder = (Split-Path -Path $p -Parent).TrimEnd('\') + '\'
+                if (Get-ScheduledTask -TaskName (Split-Path -Path $p -Leaf) -TaskPath $folder -ErrorAction SilentlyContinue) { return $true }
             }
             return $false
         }.GetNewClosure()
         $apply = {
-            $saved = @(); $restart = @()
-            foreach ($p in @(Get-NicAdvancedByDisplayNamePatternV11 $pattern)) {
-                $target = Get-NicMatchingDisplayValueV11 $p $want
-                if (-not $target) { continue }
-                $saved += @{ Name=[string]$p.Name; DisplayName=[string]$p.DisplayName; DisplayValue=[string]$p.DisplayValue }
-                Set-NetAdapterAdvancedProperty -Name $p.Name -DisplayName $p.DisplayName -DisplayValue $target -NoRestart -ErrorAction Stop
-                $restart += [string]$p.Name
-            }
-            if ($saved.Count -eq 0) { throw 'No compatible adapter property/value was found.' }
-            foreach ($n in @($restart | Select-Object -Unique)) { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue }
-            return @{ Items=$saved }
-        }.GetNewClosure()
-        $undo = {
-            param($D)
-            $restart = @()
-            foreach ($p in @($D.Items)) {
-                try {
-                    Set-NetAdapterAdvancedProperty -Name ([string]$p.Name) -DisplayName ([string]$p.DisplayName) -DisplayValue ([string]$p.DisplayValue) -NoRestart -ErrorAction Stop
-                    $restart += [string]$p.Name
-                } catch { }
-            }
-            foreach ($n in @($restart | Select-Object -Unique)) { Restart-NetAdapter -Name $n -Confirm:$false -ErrorAction SilentlyContinue }
-        }.GetNewClosure()
-        $test = {
-            $props = @(Get-NicAdvancedByDisplayNamePatternV11 $pattern)
-            if ($props.Count -eq 0) { return $false }
-            $checked = $false
-            foreach ($p in $props) {
-                $target = Get-NicMatchingDisplayValueV11 $p $want
-                if (-not $target) { continue }
-                $checked = $true
-                if ([string]$p.DisplayValue -ne [string]$target) { return $false }
-            }
-            return $checked
-        }.GetNewClosure()
-        $out += @{
-            Id=('v13-nic-' + [string]$x.Id); Category='net'; Group='NIC latency / throughput';
-            Name=[string]$x.Name; Risk='Medium'; Recommended=$false; Desc=([string]$x.Desc + ' Applying or undoing this briefly restarts the affected network adapter.');
-            Guard=$guard; Apply=$apply; Undo=$undo; Test=$test
-        }
-    }
-
-    # 24 individually reversible optional background services.
-    $servicesV13 = @(
-        @{ Id='dosvc'; Service='DoSvc'; Name='Disable Delivery Optimization service'; Desc='Stops Delivery Optimization peer/background content delivery. This can reduce update-related network/disk activity while gaming, but Windows/Store update downloads may be less efficient.' },
-        @{ Id='diag-standardcollector'; Service='diagnosticshub.standardcollector.service'; Name='Disable Diagnostics Hub Standard Collector'; Desc='Stops the Diagnostics Hub collector used by developer/diagnostic tooling when present.' },
-        @{ Id='wdi-host'; Service='WdiServiceHost'; Name='Disable Diagnostic Service Host'; Desc='Stops the Windows Diagnostic Infrastructure service host. Automatic troubleshooting/diagnostics can be reduced.' },
-        @{ Id='wdi-systemhost'; Service='WdiSystemHost'; Name='Disable Diagnostic System Host'; Desc='Stops the Windows Diagnostic Infrastructure system host. Automatic troubleshooting/diagnostics can be reduced.' },
-        @{ Id='dmwappush'; Service='dmwappushservice'; Name='Disable WAP Push message routing'; Desc='Stops the device-management WAP push routing service where present. Typical gaming desktops rarely use it.' },
-        @{ Id='branchcache'; Service='PeerDistSvc'; Name='Disable BranchCache'; Desc='Stops BranchCache peer content caching. Normal internet access remains, but enterprise BranchCache acceleration is unavailable.' },
-        @{ Id='pnrp'; Service='PNRPsvc'; Name='Disable Peer Name Resolution Protocol'; Desc='Stops legacy peer name resolution used by older peer-to-peer Windows features.' },
-        @{ Id='p2psvc'; Service='p2psvc'; Name='Disable Peer Networking Grouping'; Desc='Stops legacy Windows peer networking grouping services.' },
-        @{ Id='p2pimsvc'; Service='p2pimsvc'; Name='Disable Peer Networking Identity Manager'; Desc='Stops the legacy peer networking identity service.' },
-        @{ Id='pnrp-autoreg'; Service='PNRPAutoReg'; Name='Disable PNRP Machine Name Publication'; Desc='Stops automatic machine-name publication through the legacy PNRP stack.' },
-        @{ Id='wecsvc'; Service='Wecsvc'; Name='Disable Windows Event Collector'; Desc='Stops remote event subscription collection. Local Event Viewer logging continues; enterprise event forwarding will not.' },
-        @{ Id='filehistory'; Service='fhsvc'; Name='Disable File History service'; Desc='Stops automatic File History backup work. Do not use if you rely on File History backups.' },
-        @{ Id='autotime'; Service='autotimesvc'; Name='Disable Cellular Time service'; Desc='Stops automatic time updates supplied through cellular/mobile-broadband paths where present.' },
-        @{ Id='offlinefiles'; Service='CscService'; Name='Disable Offline Files service'; Desc='Stops enterprise Offline Files caching/synchronization. Do not use on managed PCs that rely on offline network shares.' },
-        @{ Id='natural-auth'; Service='NaturalAuthentication'; Name='Disable Natural Authentication'; Desc='Stops presence/proximity-based authentication support where present. Skip if your sign-in setup depends on it.' },
-        @{ Id='pca'; Service='PcaSvc'; Name='Disable Program Compatibility Assistant'; Desc='Stops background compatibility monitoring/prompts for older applications. Legacy apps may lose automatic compatibility assistance.' },
-        @{ Id='printnotify'; Service='PrintNotify'; Name='Disable Printer Extensions and Notifications'; Desc='Stops printer extension/notification support. Skip if you actively use printers or vendor printer apps.' },
-        @{ Id='rasauto'; Service='RasAuto'; Name='Disable Remote Access Auto Connection Manager'; Desc='Stops automatic dial-up/VPN connection triggering. Manually managed VPN software may be unaffected, but Windows auto-dial behavior will stop.' },
-        @{ Id='sharedreality'; Service='SharedRealitySvc'; Name='Disable Spatial Data / Shared Reality service'; Desc='Stops shared/spatial reality background support where present.' },
-        @{ Id='wia'; Service='stisvc'; Name='Disable Windows Image Acquisition'; Desc='Stops scanner/camera acquisition through WIA. Do not apply if you use scanners or WIA-dependent camera software.' },
-        @{ Id='netbt'; Service='NetBT'; Name='Disable NetBT driver service (Risxn)'; Desc='Disables the NetBIOS-over-TCP/IP driver service used by legacy name resolution/file-sharing environments. Normal modern TCP/IP remains; legacy NetBIOS networking can break.' },
-        @{ Id='payments'; Service='SEMgrSvc'; Name='Disable Payments and NFC/SE Manager'; Desc='Stops secure-element/NFC payment management where present. Typical gaming desktops do not use it.' },
-        @{ Id='store-install'; Service='InstallService'; Name='Disable Microsoft Store Install Service'; Desc='Stops Microsoft Store app installation/update servicing while disabled. Do not apply if you use Store/Game Pass installs.' },
-        @{ Id='lmhosts'; Service='lmhosts'; Name='Disable TCP/IP NetBIOS Helper'; Desc='Stops legacy NetBIOS name-resolution helper functionality. Modern DNS/IP networking continues, but old SMB/NetBIOS environments may be affected.' }
-    )
-    foreach ($x in $servicesV13) {
-        $svcName = [string]$x.Service
-
-        # NetBT is a kernel driver service, not a normal Win32_Service. Risxn
-        # changes its Start value directly, so preserve that behavior while
-        # still snapshotting/restoring it through the normal registry engine.
-        if ($svcName -eq 'NetBT') {
-            $netBtPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT'
-            $netBtGuard = { Test-Path -LiteralPath $netBtPath }.GetNewClosure()
-            $out += @{
-                Id=('v13-svc-' + [string]$x.Id); Category='net'; Group='Legacy network services';
-                Name=[string]$x.Name; Risk='Medium'; Recommended=$false; Restart='restart';
-                Desc=([string]$x.Desc + ' This mirrors the verified Risxn Start=4 mechanism. Undo restores the exact previous registry value.');
-                Guard=$netBtGuard; Registry=@((New-RegEntry $netBtPath 'Start' 'DWord' 4))
-            }
-            continue
-        }
-
-        $guard = { return [bool](Get-CimInstance Win32_Service -Filter ("Name='" + $svcName.Replace("'", "''") + "'") -ErrorAction SilentlyContinue) }.GetNewClosure()
-        $out += @{
-            Id=('v13-svc-' + [string]$x.Id); Category='debloat'; Group='Optional background services';
-            Name=[string]$x.Name; Risk='Medium'; Recommended=$false; Desc=([string]$x.Desc + ' Compact Tweaks snapshots the exact original start mode and running state for Undo.');
-            Guard=$guard; Services=@(@{ Name=$svcName; Mode='Disabled' })
-        }
-    }
-
-    # 30 individually reversible scheduled background tasks.
-    $tasksV13 = @(
-        @{ Id='pca-patchdb'; Path='\Microsoft\Windows\Application Experience\PcaPatchDbTask'; Name='Disable PCA Patch DB task'; Desc='Stops a scheduled Program Compatibility Assistant database maintenance pass.' },
-        @{ Id='mare-backup'; Path='\Microsoft\Windows\Application Experience\MareBackup'; Name='Disable Application Experience MareBackup'; Desc='Stops a scheduled Application Experience backup/inventory task where present.' },
-        @{ Id='cloud-createobject'; Path='\Microsoft\Windows\CloudExperienceHost\CreateObjectTask'; Name='Disable CloudExperienceHost CreateObjectTask'; Desc='Stops a Cloud Experience Host scheduled object-creation task where present.' },
-        @{ Id='ceip-bthsqm'; Path='\Microsoft\Windows\Customer Experience Improvement Program\BthSQM'; Name='Disable Bluetooth SQM task'; Desc='Stops a CEIP/SQM Bluetooth telemetry task where present.' },
-        @{ Id='ceip-uploader'; Path='\Microsoft\Windows\Customer Experience Improvement Program\Uploader'; Name='Disable CEIP Uploader task'; Desc='Stops a Customer Experience Improvement Program uploader task where present.' },
-        @{ Id='silentcleanup'; Path='\Microsoft\Windows\DiskCleanup\SilentCleanup'; Name='Disable automatic SilentCleanup'; Desc='Stops scheduled Disk Cleanup from starting in the background. Manual cleanup remains available.' },
-        @{ Id='diskfootprint-diag'; Path='\Microsoft\Windows\DiskFootprint\Diagnostics'; Name='Disable DiskFootprint Diagnostics'; Desc='Stops scheduled storage-footprint diagnostics.' },
-        @{ Id='storage-sense-task'; Path='\Microsoft\Windows\DiskFootprint\StorageSense'; Name='Disable scheduled Storage Sense'; Desc='Stops the scheduled Storage Sense task. Manual storage cleanup remains available.' },
-        @{ Id='filehistory-maint'; Path='\Microsoft\Windows\FileHistory\File History (maintenance mode)'; Name='Disable File History maintenance task'; Desc='Stops scheduled File History maintenance. Do not apply if you rely on File History.' },
-        @{ Id='flight-features'; Path='\Microsoft\Windows\Flighting\FeatureConfig\ReconcileFeatures'; Name='Disable Flighting feature reconciliation'; Desc='Stops a scheduled Windows feature-flighting reconciliation task where present.' },
-        @{ Id='flight-onesettings'; Path='\Microsoft\Windows\Flighting\OneSettings\RefreshCache'; Name='Disable Flighting OneSettings refresh'; Desc='Stops a scheduled OneSettings/feature-flighting cache refresh where present.' },
-        @{ Id='language-install'; Path='\Microsoft\Windows\LanguageComponentsInstaller\Installation'; Name='Disable language component installation task'; Desc='Stops automatic scheduled language component installation. Skip if you frequently add Windows language features.' },
-        @{ Id='language-reconcile'; Path='\Microsoft\Windows\LanguageComponentsInstaller\ReconcileLanguageResources'; Name='Disable language resource reconciliation'; Desc='Stops scheduled language-resource reconciliation.' },
-        @{ Id='license-temp'; Path='\Microsoft\Windows\License Manager\TempSignedLicenseExchange'; Name='Disable temporary signed license exchange task'; Desc='Stops a scheduled Store/licensing exchange task where present; Store/UWP licensing scenarios may be affected.' },
-        @{ Id='provision-cellular'; Path='\Microsoft\Windows\Management\Provisioning\Cellular'; Name='Disable cellular provisioning task'; Desc='Stops scheduled cellular provisioning. Desktop Ethernet/Wi-Fi PCs normally do not need it.' },
-        @{ Id='provision-logon'; Path='\Microsoft\Windows\Management\Provisioning\Logon'; Name='Disable provisioning logon task'; Desc='Stops a management/provisioning task triggered at logon. Avoid on managed/enterprise PCs.' },
-        @{ Id='memdiag-events'; Path='\Microsoft\Windows\MemoryDiagnostic\ProcessMemoryDiagnosticEvents'; Name='Disable memory diagnostic event task'; Desc='Stops automatic scheduled processing of memory diagnostic events. Manual Memory Diagnostic still exists.' },
-        @{ Id='memdiag-full'; Path='\Microsoft\Windows\MemoryDiagnostic\RunFullMemoryDiagnostic'; Name='Disable scheduled full memory diagnostic'; Desc='Stops scheduled full memory diagnostic passes. Manual testing remains available.' },
-        @{ Id='pushinstall-login'; Path='\Microsoft\Windows\PushToInstall\LoginCheck'; Name='Disable PushToInstall login task'; Desc='Stops Store push-to-install login checks where present.' },
-        @{ Id='indexer-maint'; Path='\Microsoft\Windows\Shell\IndexerAutomaticMaintenance'; Name='Disable indexer automatic maintenance'; Desc='Stops a scheduled Search Indexer maintenance pass. Search indexing may become less self-maintaining.' },
-        @{ Id='space-agent'; Path='\Microsoft\Windows\SpacePort\SpaceAgentTask'; Name='Disable Storage Spaces agent task'; Desc='Stops a scheduled Storage Spaces background agent task. Do not apply if you use Storage Spaces.' },
-        @{ Id='space-manager'; Path='\Microsoft\Windows\SpacePort\SpaceManagerTask'; Name='Disable Storage Spaces manager task'; Desc='Stops a scheduled Storage Spaces management task. Do not apply if you use Storage Spaces.' },
-        @{ Id='speech-model'; Path='\Microsoft\Windows\Speech\SpeechModelDownloadTask'; Name='Disable speech model download task'; Desc='Stops scheduled speech-model downloads. Speech recognition/voice features may miss automatic model updates.' },
-        @{ Id='sysmain-respri'; Path='\Microsoft\Windows\Sysmain\ResPriStaticDbSync'; Name='Disable SysMain resource-priority DB sync'; Desc='Stops a scheduled SysMain resource-priority database synchronization task where present.' },
-        @{ Id='wlan-cdssync'; Path='\Microsoft\Windows\WlanSvc\CDSSync'; Name='Disable WLAN CDSSync task'; Desc='Stops a scheduled WLAN synchronization task where present. Normal Wi-Fi connection management remains service-driven.' },
-        @{ Id='wwan-notify'; Path='\Microsoft\Windows\WwanSvc\NotificationTask'; Name='Disable WWAN notification task'; Desc='Stops scheduled mobile-broadband notifications. Ethernet/Wi-Fi desktops normally do not need it.' },
-        @{ Id='wwan-oobe'; Path='\Microsoft\Windows\WwanSvc\OobeDiscovery'; Name='Disable WWAN OOBE discovery task'; Desc='Stops mobile-broadband out-of-box discovery where present.' },
-        @{ Id='workfolders-logon'; Path='\Microsoft\Windows\Work Folders\Work Folders Logon Synchronization'; Name='Disable Work Folders logon sync'; Desc='Stops Work Folders synchronization at logon. Do not apply if you use enterprise Work Folders.' },
-        @{ Id='workfolders-maint'; Path='\Microsoft\Windows\Work Folders\Work Folders Maintenance Work'; Name='Disable Work Folders maintenance'; Desc='Stops scheduled Work Folders maintenance/synchronization.' },
-        @{ Id='workplace-join'; Path='\Microsoft\Windows\Workplace Join\Automatic-Device-Join'; Name='Disable automatic workplace device join'; Desc='Stops automatic Entra/Azure AD workplace join attempts. Avoid on managed school/work PCs.' }
-    )
-    foreach ($x in $tasksV13) {
-        $taskPath = [string]$x.Path
-        $folder = Split-Path -Path $taskPath -Parent
-        $taskName = Split-Path -Path $taskPath -Leaf
-        $taskFolder = $folder.TrimEnd('\') + '\'
-        $guard = { return [bool](Get-ScheduledTask -TaskName $taskName -TaskPath $taskFolder -ErrorAction SilentlyContinue) }.GetNewClosure()
-        $apply = {
-            $touched = Disable-ScheduledTaskList @($taskPath)
-            if (@($touched).Count -eq 0) { throw 'The task is already disabled or Windows did not allow it to be changed.' }
+            $touched = Disable-ScheduledTaskList @($paths)
+            if (@($touched).Count -eq 0) { throw 'These tasks are already disabled or Windows did not allow them to be changed.' }
             return @{ Tasks=@($touched) }
         }.GetNewClosure()
-        $undo = { param($D) Enable-ScheduledTaskList @($D.Tasks) }.GetNewClosure()
+        $undo = { param($D) Enable-ScheduledTaskList @($D.Tasks) }
         $test = {
-            $t = Get-ScheduledTask -TaskName $taskName -TaskPath $taskFolder -ErrorAction SilentlyContinue
-            return [bool]($t -and $t.State -eq 'Disabled')
+            $found = 0
+            foreach ($p in $paths) {
+                $folder = (Split-Path -Path $p -Parent).TrimEnd('\') + '\'
+                $t = Get-ScheduledTask -TaskName (Split-Path -Path $p -Leaf) -TaskPath $folder -ErrorAction SilentlyContinue
+                if (-not $t) { continue }
+                $found++
+                if ($t.State -ne 'Disabled') { return $false }
+            }
+            return ($found -gt 0)
         }.GetNewClosure()
         $out += @{
-            Id=('v13-task-' + [string]$x.Id); Category='debloat'; Group='Scheduled background work';
-            Name=[string]$x.Name; Risk='Medium'; Recommended=$false; Desc=([string]$x.Desc + ' Undo re-enables it only when Compact Tweaks disabled it.');
+            Id=$x.Id; Category='debloat'; Group='Individual scheduled tasks'; Name=$x.Name; Risk='Low'; Recommended=$false
+            Desc=($x.Desc + ' Undo re-enables only the tasks Compact Tweaks disabled.')
             Guard=$guard; Apply=$apply; Undo=$undo; Test=$test
         }
     }
 
-    # 41 registry-backed system/background/network controls. One Risxn entry
-    # deliberately groups its five ServiceProvider values as one feature.
-    $registryV13 = @(
-        @{ Id='risxn-onedrive-sync-off'; Name='Disable OneDrive file sync policy (Risxn)'; Risk='Medium'; Group='Risxn verified / background'; Desc='Disables OneDrive file synchronization through the Windows policy used by the Risxn pack. This can remove OneDrive background sync CPU, disk and network activity, but OneDrive syncing stops until undone.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OneDrive' 'DisableFileSyncNGSC' 'DWord' 1)) },
-        @{ Id='risxn-service-provider-priority'; Name='Legacy name-resolution provider priorities (Risxn)'; Risk='Medium'; Group='Risxn verified / network'; Unproven=$true; Desc='Imports the ServiceProvider priority block found in Risxn Network Settings. It changes legacy Windows name-resolution provider ordering. Modern games normally resolve through DNS and are unlikely to gain measurable ping/FPS, so this is kept optional and marked unproven.'; Entries=@((New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\ServiceProvider' 'Class' 'DWord' 8), (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\ServiceProvider' 'DnsPriority' 'DWord' 6), (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\ServiceProvider' 'HostsPriority' 'DWord' 5), (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\ServiceProvider' 'LocalPriority' 'DWord' 4), (New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\ServiceProvider' 'NetbtPriority' 'DWord' 7)) },
-        @{ Id='dns-negative-ttl-zero'; Name='DNS negative-cache TTL: 0'; Risk='Low'; Group='Network resolution'; Desc='Stops long-lived caching of failed DNS lookups so a name can be retried immediately after a transient DNS failure. It does not reduce steady-state game-server ping.'; Entries=@((New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' 'MaxNegativeCacheTtl' 'DWord' 0)) },
-        @{ Id='dns-negative-soa-zero'; Name='DNS negative SOA cache time: 0'; Risk='Low'; Group='Network resolution'; Desc='Prevents DNS negative responses from being retained through the SOA negative-cache timer, which can help retry transient lookup failures sooner.'; Entries=@((New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' 'NegativeSOACacheTime' 'DWord' 0)) },
-        @{ Id='dns-netfailure-cache-zero'; Name='DNS network-failure cache time: 0'; Risk='Low'; Group='Network resolution'; Desc='Prevents the DNS client from retaining network-failure results, reducing delay when connectivity returns after a short failure.'; Entries=@((New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' 'NetFailureCacheTime' 'DWord' 0)) },
-        @{ Id='llmnr-off'; Name='Disable LLMNR multicast name resolution'; Risk='Low'; Group='Network background'; Desc='Disables Link-Local Multicast Name Resolution. This removes local multicast name-query traffic; use DNS/hosts instead. It can affect discovery on networks that rely on LLMNR.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast' 'DWord' 0)) },
-        @{ Id='pmtu-discovery-on'; Name='Enable Path MTU Discovery'; Risk='Low'; Group='TCP behavior'; Desc='Ensures IPv4 Path MTU Discovery is enabled so Windows can learn an appropriate path MTU instead of falling back to a small fixed MTU. Usually this is already the default.'; Entries=@((New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'EnablePMTUDiscovery' 'DWord' 1)) },
-        @{ Id='tcp-sack-on'; Name='Enable TCP selective acknowledgements'; Risk='Low'; Group='TCP behavior'; Desc='Ensures TCP selective acknowledgements are enabled on stacks that still honor this legacy value. It mainly helps TCP loss recovery; most games use UDP for gameplay.'; Entries=@((New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'SackOpts' 'DWord' 1)) },
-        @{ Id='tcp-max-user-port'; Name='Expand ephemeral TCP port range ceiling'; Risk='Low'; Group='TCP behavior'; Unproven=$true; Desc='Raises the legacy MaxUserPort ceiling to 65534 for workloads creating many outbound TCP connections. It does not directly improve FPS or UDP game latency.'; Entries=@((New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'MaxUserPort' 'DWord' 65534)) },
-        @{ Id='tcp-timewait-30'; Name='TCP TIME_WAIT delay: 30 seconds'; Risk='Medium'; Group='TCP behavior'; Unproven=$true; Desc='Shortens the legacy TCP TIME_WAIT retention period to 30 seconds, freeing connection tuples sooner for connection-heavy workloads. It is not a raw gaming-ping tweak.'; Entries=@((New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'TcpTimedWaitDelay' 'DWord' 30)) },
-        @{ Id='large-system-cache-off'; Name='Memory manager: favor applications over server cache'; Risk='Low'; Group='Memory / filesystem'; Desc='Keeps LargeSystemCache disabled so a client gaming PC favors normal application working sets rather than server-style file-cache behavior.'; Entries=@((New-RegEntry 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' 'LargeSystemCache' 'DWord' 0)) },
-        @{ Id='removable-indexing-off'; Name='Disable indexing on removable drives'; Risk='Low'; Group='Search indexing'; Desc='Prevents Windows Search from indexing removable drives, avoiding background indexer CPU and disk activity when USB/removable storage is attached.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'DisableRemovableDriveIndexing' 'DWord' 1)) },
-        @{ Id='email-attachment-indexing-off'; Name='Disable email attachment indexing'; Risk='Low'; Group='Search indexing'; Desc='Prevents Windows Search from indexing email attachments where the policy is supported, reducing indexer work on PCs using indexed mail stores.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'PreventIndexingEmailAttachments' 'DWord' 1)) },
-        @{ Id='search-highlights-off'; Name='Disable Search highlights'; Risk='Low'; Group='Search background'; Desc='Disables dynamic Search highlights content in the taskbar/Search UI, trimming cloud-fed shell content.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings' 'IsDynamicSearchBoxEnabled' 'DWord' 0)) },
-        @{ Id='bing-search-off'; Name='Disable Bing integration in Start search'; Risk='Low'; Group='Search background'; Desc='Disables Bing/web integration in the legacy/current-user Search setting where Windows still honors it, reducing network-backed search work.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search' 'BingSearchEnabled' 'DWord' 0)) },
-        @{ Id='web-search-policy-off'; Name='Disable Windows web search policy'; Risk='Low'; Group='Search background'; Desc='Applies the Windows Search policy that disables web search integration where supported, keeping Start/Search more local.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'DisableWebSearch' 'DWord' 1)) },
-        @{ Id='cortana-lock-off'; Name='Disable Cortana above the lock screen'; Risk='Low'; Group='Search background'; Desc='Prevents legacy Cortana from running above the lock screen on Windows versions where the policy is still honored.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'AllowCortanaAboveLock' 'DWord' 0)) },
-        @{ Id='background-app-global-off'; Name='Disable Store/UWP background app access globally'; Risk='Medium'; Group='Background apps'; Desc='Disables current-user background access for supported Store/UWP apps. Notifications/background updates from those apps may stop.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled' 'DWord' 1)) },
-        @{ Id='cross-device-platform-off'; Name='Disable Connected Devices Platform policy'; Risk='Medium'; Group='Cross-device background'; Desc='Disables Connected Devices Platform policy support used for cross-device experiences. Phone/cross-device features may stop working.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'EnableCdp' 'DWord' 0)) },
-        @{ Id='tailored-diag-policy-off'; Name='Disable diagnostic-data tailored experiences policy'; Risk='Low'; Group='Telemetry background'; Desc='Prevents Windows from using diagnostic data for tailored cloud experiences, reducing one class of background personalization.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent' 'DisableTailoredExperiencesWithDiagnosticData' 'DWord' 1)) },
-        @{ Id='telemetry-device-name-off'; Name='Exclude device name from telemetry'; Risk='Low'; Group='Telemetry background'; Desc='Prevents device-name inclusion in diagnostic data where supported. Performance impact is small; this is a background/privacy trim.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowDeviceNameInTelemetry' 'DWord' 0)) },
-        @{ Id='diag-log-limit'; Name='Limit diagnostic log collection'; Risk='Low'; Group='Telemetry background'; Desc='Limits optional diagnostic log collection through Windows policy, reducing some diagnostic background work.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'LimitDiagnosticLogCollection' 'DWord' 1)) },
-        @{ Id='dump-collection-limit'; Name='Limit optional dump collection'; Risk='Low'; Group='Telemetry background'; Desc='Limits optional diagnostic dump collection. This can reduce diagnostic I/O after failures, but gives Microsoft/support less crash data.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'LimitDumpCollection' 'DWord' 1)) },
-        @{ Id='toast-global-off'; Name='Disable toast notifications globally'; Risk='Medium'; Group='Notification background'; Desc='Disables current-user toast notifications. This removes notification rendering/wakeups but also hides useful app notifications.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' 'ToastEnabled' 'DWord' 0)) },
-        @{ Id='notification-center-off'; Name='Disable Notification Center'; Risk='Medium'; Group='Notification background'; Desc='Disables the Windows notification/action center UI through policy. Use only if you do not rely on it.'; Entries=@((New-RegEntry 'HKCU:\Software\Policies\Microsoft\Windows\Explorer' 'DisableNotificationCenter' 'DWord' 1)) },
-        @{ Id='toast-apps-off'; Name='Disable application toast notifications policy'; Risk='Medium'; Group='Notification background'; Desc='Prevents application toast notifications through policy, cutting notification UI activity at the cost of missing toasts.'; Entries=@((New-RegEntry 'HKCU:\Software\Policies\Microsoft\Windows\CurrentVersion\PushNotifications' 'NoToastApplicationNotification' 'DWord' 1)) },
-        @{ Id='toast-lock-off'; Name='Disable lock-screen toast notifications'; Risk='Low'; Group='Notification background'; Desc='Stops application toast notifications on the lock screen.'; Entries=@((New-RegEntry 'HKCU:\Software\Policies\Microsoft\Windows\CurrentVersion\PushNotifications' 'NoToastApplicationNotificationOnLockScreen' 'DWord' 1)) },
-        @{ Id='recent-doc-history-off'; Name='Disable Recent Documents history'; Risk='Low'; Group='Explorer background'; Desc='Stops Explorer from maintaining Recent Documents history, reducing shell bookkeeping and removing recent-document lists.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'NoRecentDocsHistory' 'DWord' 1)) },
-        @{ Id='instrumentation-off'; Name='Disable Explorer user tracking instrumentation'; Risk='Low'; Group='Explorer background'; Desc='Disables legacy Explorer usage tracking/instrumentation used for personalized menus on systems where it is honored.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'NoInstrumentation' 'DWord' 1)) },
-        @{ Id='low-disk-checks-off'; Name='Disable Explorer low-disk-space polling'; Risk='Medium'; Group='Explorer background'; Desc='Disables Explorer low-disk-space warning checks. This removes those warnings; monitor free disk space yourself.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'NoLowDiskSpaceChecks' 'DWord' 1)) },
-        @{ Id='shortcut-linkinfo-off'; Name='Skip distributed shortcut link-info resolution'; Risk='Low'; Group='Explorer resolution'; Desc='Stops Explorer using distributed link information when resolving shortcuts, reducing network/path probing for stale links.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'LinkResolveIgnoreLinkInfo' 'DWord' 1)) },
-        @{ Id='shortcut-search-off'; Name='Do not search drives to resolve broken shortcuts'; Risk='Low'; Group='Explorer resolution'; Desc='Prevents Explorer from searching local drives for a target when a shortcut is broken, avoiding potentially slow scans.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'NoResolveSearch' 'DWord' 1)) },
-        @{ Id='shortcut-track-off'; Name='Disable shortcut target tracking'; Risk='Low'; Group='Explorer resolution'; Desc='Disables legacy shortcut target tracking, reducing background resolution work for moved targets.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'NoResolveTrack' 'DWord' 1)) },
-        @{ Id='internet-openwith-off'; Name='Disable Internet lookup for unknown file types'; Risk='Low'; Group='Explorer resolution'; Desc='Stops Explorer from performing Internet lookup behavior for unknown file types on Windows versions that still honor it.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'NoInternetOpenWith' 'DWord' 1)) },
-        @{ Id='network-thumbsdb-off'; Name='Disable thumbs.db creation on network folders'; Risk='Low'; Group='Explorer I/O'; Desc='Prevents thumbnail database writes on network folders, reducing network-share metadata I/O.'; Entries=@((New-RegEntry 'HKCU:\Software\Policies\Microsoft\Windows\Explorer' 'DisableThumbsDBOnNetworkFolders' 'DWord' 1)) },
-        @{ Id='icon-cache-8192'; Name='Increase Explorer icon cache to 8192 KB'; Risk='Low'; Group='Explorer cache'; Desc='Increases the Explorer icon cache size so common icons are less likely to be regenerated. This improves shell responsiveness, not in-game FPS.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' 'Max Cached Icons' 'String' '8192')) },
-        @{ Id='aero-peek-off'; Name='Disable Aero Peek'; Risk='Low'; Group='Desktop composition'; Desc='Disables Aero Peek desktop previews, removing one desktop-composition effect.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'EnableAeroPeek' 'DWord' 0)) },
-        @{ Id='live-thumbnails-off'; Name='Disable live taskbar thumbnail caching'; Risk='Low'; Group='Desktop composition'; Desc='Disables the Explorer option that keeps taskbar preview thumbnails hibernated/cached for fast live previews, trading preview behavior for less retained UI state.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'AlwaysHibernateThumbnails' 'DWord' 0)) },
-        @{ Id='store-openwith-off'; Name='Disable Store lookup in Open With'; Risk='Low'; Group='Explorer background'; Desc='Stops Explorer from offering/looking up Microsoft Store apps in Open With, avoiding a cloud-backed lookup path.'; Entries=@((New-RegEntry 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'NoUseStoreOpenWith' 'DWord' 1)) },
-        @{ Id='online-tips-off'; Name='Disable Settings online tips'; Risk='Low'; Group='Shell background'; Desc='Disables online tips in Windows Settings where supported, reducing cloud-fed help/tip retrieval.'; Entries=@((New-RegEntry 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'AllowOnlineTips' 'DWord' 0)) },
-        @{ Id='cloud-app-notifications-off'; Name='Disable cloud application notifications'; Risk='Low'; Group='Notification background'; Desc='Disables cloud-backed application notifications where the policy is honored.'; Entries=@((New-RegEntry 'HKCU:\Software\Policies\Microsoft\Windows\CurrentVersion\PushNotifications' 'NoCloudApplicationNotification' 'DWord' 1)) }
+    # ------------------------------------------------------------------
+    # Power plan settings (active plan, plugged in)
+    # ------------------------------------------------------------------
+    $pw = @(
+        @{ Id='cpu-cooling-active'; Cat='cpu'; Group='Power'; Name='Use active cooling before throttling'; Laptop=$false
+           Items=@( @{ SubGroup='SUB_PROCESSOR'; Setting='SYSCOOLPOL'; Value=1 } )
+           Desc='Sets the system cooling policy to Active on the plugged-in plan. Windows then speeds up the fan before it lowers CPU speed to stay cool, instead of the passive default of lowering speed first. Fans get louder and run sooner; on a laptop that means more noise and heat.' },
+        @{ Id='cpu-idle-scaling-off'; Cat='cpu'; Group='Advanced processor latency'; Name='Turn off processor idle threshold scaling'; Laptop=$false
+           Items=@( @{ SubGroup='SUB_PROCESSOR'; Setting='IDLESCALING'; Value=0 } )
+           Desc='Turns off idle-threshold scaling, which makes Windows adapt how readily the CPU enters deeper idle states based on how it was recently used. Without it the thresholds stay fixed. This is a fine-grained latency option; idle power use goes up slightly.' },
+        @{ Id='cpu-freq-cap-off'; Cat='cpu'; Group='Processor boost'; Name='Remove processor frequency caps'; Laptop=$false
+           Items=@( @{ SubGroup='SUB_PROCESSOR'; Setting='PROCFREQMAX'; Value=0 }, @{ SubGroup='SUB_PROCESSOR'; Setting='PROCFREQMAX1'; Value=0 } )
+           Desc='Sets the maximum processor frequency limits (for normal and efficiency-class cores) to 0, which means unlimited. Some PC and laptop makers ship power plans with a frequency cap that quietly holds the CPU below its rated speed; this clears it. On a stock plan it was already unlimited, so you may see Already set.' },
+        @{ Id='cpu-perf-check-interval'; Cat='cpu'; Group='Advanced processor response'; Name='Faster CPU performance check interval'; Laptop=$false
+           Items=@( @{ SubGroup='SUB_PROCESSOR'; Setting='4d2b0152-7d5c-498b-88e2-34345392a2c5'; Value=1 } )
+           Desc='Makes Windows re-evaluate CPU frequency every 1 ms instead of every 15 ms on plans that use OS-controlled frequency scaling, so the CPU reacts sooner to short bursts. Little or no effect on CPUs that manage their own frequency (most recent Intel and AMD chips); raises CPU activity a little.' },
+        @{ Id='usb3-link-power-off'; Cat='kbm'; Group='USB tweaks'; Name='Turn off USB 3 link power management'; Laptop=$false
+           Items=@( @{ SubGroup='2a737441-1930-4402-8d77-b2bebba308a3'; Setting='d4e98f31-5ffe-4ce1-be31-1b38b384c009'; Value=0 } )
+           Desc='Stops USB 3 links from dropping into low-power states between transfers. That can avoid a short wake-up delay on a USB 3 mouse, keyboard receiver or audio device. This is separate from USB selective suspend. Uses a little more power.' },
+        @{ Id='pwr-switchable-graphics-max'; Cat='gpu'; Group='Graphics features'; Name='Switchable graphics: maximize performance'; Laptop=$false
+           Items=@( @{ SubGroup='e276e160-7cb0-43c6-b20b-73f5dce39954'; Setting='a1662ab2-9d34-4e53-ba8b-2639b9e20857'; Value=3 } )
+           Desc='On laptops that switch between integrated and dedicated graphics, sets the power plan''s Switchable Dynamic Graphics policy to Maximize Performance on AC power, so Windows prefers the dedicated GPU. Only shown when the plan exposes the setting. Does nothing on desktops.' }
     )
-    foreach ($x in $registryV13) {
+    foreach ($x in $pw) {
+        $items = @($x.Items)
+        $guard = {
+            foreach ($i in $items) {
+                if (-not (Test-PowerCfgSettingAvailable ([string]$i.SubGroup) ([string]$i.Setting))) { return $false }
+            }
+            return $true
+        }.GetNewClosure()
+        $apply = { Set-PowerCfgBundleV12 $items }.GetNewClosure()
+        $undo = { param($D) Restore-PowerCfgBundleV12 $D }
+        $test = { Test-PowerCfgBundleV12 $items }.GetNewClosure()
         $t = @{
-            Id=('v13-reg-' + [string]$x.Id); Category='windows'; Group=[string]$x.Group;
-            Name=[string]$x.Name; Risk=[string]$x.Risk; Recommended=$false; Desc=[string]$x.Desc;
-            Registry=@($x.Entries)
+            Id=$x.Id; Category=$x.Cat; Group=$x.Group; Name=$x.Name; Risk='Medium'; Recommended=$false
+            Desc=($x.Desc + ' Applies to the active power plan while plugged in. Apply it after choosing your plan; Undo restores the saved value.')
+            Guard=$guard; Apply=$apply; Undo=$undo; Test=$test
         }
-        if ($x.Unproven) { $t.Unproven = $true }
+        if ($x.Laptop) { $t.IsLaptopSafe = $true }
         $out += $t
     }
 
-    if (@($out).Count -ne 150) { throw ('v1.3 catalog construction error: expected 150 entries, got ' + @($out).Count) }
+    # ------------------------------------------------------------------
+    # Boot configuration
+    # ------------------------------------------------------------------
+    $out += @{
+        Id='bcd-tscsync-enhanced'; Category='cpu'; Group='Latency and kernel'; Name='Enhanced TSC synchronization policy'; Risk='Medium'; Recommended=$false
+        Restart='restart'
+        Desc='Sets the boot option tscsyncpolicy to Enhanced, which tells Windows how to keep the CPU cycle counters of different cores in step. Results are mixed: some systems see slightly steadier frame times, many see no change. Try it, and Undo if anything feels worse. BitLocker is suspended for one restart so this does not trigger a recovery-key prompt.'
+        Apply={
+            $susp = Suspend-BitLockerForBoot
+            $prev = Get-BcdFlag 'tscsyncpolicy'
+            & bcdedit.exe /set '{current}' tscsyncpolicy enhanced | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'bcdedit could not change tscsyncpolicy.' }
+            return @{ Prev=$prev; Suspended=$susp }
+        }
+        Undo={
+            param($D)
+            [void](Suspend-BitLockerForBoot)
+            if ($D.Prev) { & bcdedit.exe /set '{current}' tscsyncpolicy ([string]$D.Prev) | Out-Null }
+            else { & bcdedit.exe /deletevalue '{current}' tscsyncpolicy | Out-Null }
+        }
+        Test={ return ([string](Get-BcdFlag 'tscsyncpolicy')) -ieq 'Enhanced' }
+    }
+
+    # ------------------------------------------------------------------
+    # Network adapters and bindings (one tweak covers every matching adapter)
+    # ------------------------------------------------------------------
+    $out += @{
+        Id='nic-uso-off'; Category='net'; Group='Adapter advanced properties'; Name='Disable UDP Segmentation Offload (USO)'; Risk='Medium'; Recommended=$false
+        Guard={ (@(Get-NicAdvancedByKeyword '*UsoIPv4').Count + @(Get-NicAdvancedByKeyword '*UsoIPv6').Count) -gt 0 }
+        Desc='Turns off UDP Segmentation Offload on adapters that support it (IPv4 and IPv6 together). USO hands big UDP sends to the network card to cut up, and on some drivers that adds jitter to the small, frequent UDP packets games use. Moving the work back to the CPU costs almost nothing. The network adapter restarts briefly when this is applied or undone.'
+        Apply={ Set-NicAdvancedKeywordsV13 @('*UsoIPv4','*UsoIPv6') '0' }
+        Undo={ param($D) Restore-NicAdvancedKeywordsV13 $D }
+        Test={ Test-NicAdvancedKeywordsV13 @('*UsoIPv4','*UsoIPv6') '0' }
+    }
+
+    $bindings = @(
+        @{ Id='nic-bind-lltd-off'; Ids=@('ms_lltdio','ms_rspndr'); Risk='Low'; Name='Unbind Link-Layer Topology Discovery from your adapter'
+           Desc='Removes the LLTD Mapper I/O driver and Responder bindings from your active adapters. These only serve the old Network Map and let other PCs map this one. Undo re-binds them.' },
+        @{ Id='nic-bind-file-sharing-off'; Ids=@('ms_server'); Risk='Medium'; Name='Unbind File and Printer Sharing from your adapter'
+           Desc='Removes the File and Printer Sharing binding from your active adapters, so this PC stops answering SMB sharing requests on that connection. You can still reach other PCs. Do not apply if you share folders or printers from this PC. Undo re-binds it.' }
+    )
+    foreach ($x in $bindings) {
+        $cids = @($x.Ids)
+        $apply = {
+            $ad = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })
+            if ($ad.Count -eq 0) { throw 'No active network adapter was found.' }
+            $touched = @()
+            foreach ($a in $ad) {
+                foreach ($c in $cids) {
+                    $b = Get-NetAdapterBinding -Name $a.Name -ComponentID $c -ErrorAction SilentlyContinue
+                    if ($b -and $b.Enabled) {
+                        Disable-NetAdapterBinding -Name $a.Name -ComponentID $c -ErrorAction SilentlyContinue
+                        $touched += @{ Adapter=[string]$a.Name; Component=[string]$c }
+                    }
+                }
+            }
+            if ($touched.Count -eq 0) { throw 'Already unbound, or not present, on your active adapters.' }
+            return @{ Items=$touched }
+        }.GetNewClosure()
+        $undo = { param($D) foreach ($i in @($D.Items)) { Enable-NetAdapterBinding -Name ([string]$i.Adapter) -ComponentID ([string]$i.Component) -ErrorAction SilentlyContinue } }
+        $test = {
+            $any = $false
+            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+                foreach ($c in $cids) {
+                    $b = Get-NetAdapterBinding -Name $a.Name -ComponentID $c -ErrorAction SilentlyContinue
+                    if (-not $b) { continue }
+                    $any = $true
+                    if ($b.Enabled) { return $false }
+                }
+            }
+            return $any
+        }.GetNewClosure()
+        $out += @{ Id=$x.Id; IsLaptopSafe=$true; Category='net'; Group='Network stack'; Name=$x.Name; Risk=$x.Risk; Recommended=$false; Desc=$x.Desc; Apply=$apply; Undo=$undo; Test=$test }
+    }
+
+    # One QoS policy per detected game exe is created by ONE tweak.
+    $out += @{
+        Id='net-game-dscp'; Category='net'; Group='Priority'; Name='Mark detected game traffic as high priority (DSCP 46)'; Risk='Low'; Recommended=$false
+        Guard={ @(Get-DetectedGameExeNamesV12).Count -gt 0 }
+        Desc='Creates Windows QoS policies that tag network packets from your detected games with DSCP 46 (Expedited Forwarding). Routers and switches that honor DSCP can then send game packets ahead of downloads on the same network. Many home routers and nearly all ISPs ignore it, so the benefit depends on your router. It needs the QoS Packet Scheduler, so do not combine it with the QoS unbind tweak. This is ONE tweak for every detected game. Undo removes exactly the policies it created.'
+        Restart='restart'
+        Apply={
+            $exes = @(Get-DetectedGameExeNamesV12)
+            if ($exes.Count -eq 0) { throw 'No installed games were detected.' }
+            $base = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\QoS'
+            $made = @()
+            foreach ($e in $exes) {
+                $safe = ([string]$e) -replace '[^A-Za-z0-9._-]', '_'
+                $key = $base + '\CompactTweaks-' + $safe
+                $existed = Test-Path -LiteralPath $key
+                Set-RegValue -Path $key -Name 'Version' -Type 'String' -Value '1.0'
+                Set-RegValue -Path $key -Name 'Application Name' -Type 'String' -Value ([string]$e)
+                Set-RegValue -Path $key -Name 'Protocol' -Type 'String' -Value '*'
+                Set-RegValue -Path $key -Name 'Local Port' -Type 'String' -Value '*'
+                Set-RegValue -Path $key -Name 'Local IP' -Type 'String' -Value '*'
+                Set-RegValue -Path $key -Name 'Local IP Prefix Length' -Type 'String' -Value '*'
+                Set-RegValue -Path $key -Name 'Remote Port' -Type 'String' -Value '*'
+                Set-RegValue -Path $key -Name 'Remote IP' -Type 'String' -Value '*'
+                Set-RegValue -Path $key -Name 'Remote IP Prefix Length' -Type 'String' -Value '*'
+                Set-RegValue -Path $key -Name 'DSCP Value' -Type 'String' -Value '46'
+                Set-RegValue -Path $key -Name 'Throttle Rate' -Type 'String' -Value '-1'
+                $made += @{ Key=$key; Existed=$existed }
+            }
+            return @{ Made=$made }
+        }
+        Undo={
+            param($D)
+            foreach ($m in @($D.Made)) {
+                if (-not $m.Existed) { Remove-Item -LiteralPath ([string]$m.Key) -Recurse -Force -ErrorAction SilentlyContinue }
+            }
+        }
+        Test={
+            $exes = @(Get-DetectedGameExeNamesV12)
+            if ($exes.Count -eq 0) { return $false }
+            foreach ($e in $exes) {
+                $safe = ([string]$e) -replace '[^A-Za-z0-9._-]', '_'
+                $s = Get-RegSnapshot ('HKLM:\SOFTWARE\Policies\Microsoft\Windows\QoS\CompactTweaks-' + $safe) 'DSCP Value'
+                if (-not $s.Existed -or [string]$s.Value -ne '46') { return $false }
+            }
+            return $true
+        }
+    }
+
+    # ------------------------------------------------------------------
+    # GPU
+    # ------------------------------------------------------------------
+    $out += @{
+        Id='gpu-vrr-windowed'; Category='gpu'; Group='DirectX tweaks'; Name='Variable refresh rate for windowed games'; Risk='Low'; Recommended=$false; IsLaptopSafe=$true
+        Guard={ (Get-WinBuild) -ge 22621 }
+        Desc='Turns on the Windows 11 setting Variable refresh rate (Settings > Display > Graphics > Default graphics settings). G-Sync and FreeSync then also apply to DirectX 10 and 11 games that run windowed or borderless, so they get tear-free output without fixed-refresh frame pacing. Needs a variable-refresh monitor; otherwise it does nothing.'
+        Apply={
+            $path = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+            $name = 'DirectXUserGlobalSettings'
+            $snap = Get-RegSnapshot $path $name
+            $cur = ''
+            if ($snap.Existed) { $cur = [string]$snap.Value }
+            if ($cur -match 'VRROptimizeEnable=\d;') { $new = $cur -replace 'VRROptimizeEnable=\d;', 'VRROptimizeEnable=1;' } else { $new = $cur + 'VRROptimizeEnable=1;' }
+            Set-RegValue -Path $path -Name $name -Type 'String' -Value $new
+            return @{ Saved = @($snap) }
+        }
+        Undo={ param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
+        Test={
+            $c = Get-RegSnapshot 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' 'DirectXUserGlobalSettings'
+            return [bool]($c.Existed -and ([string]$c.Value) -match 'VRROptimizeEnable=1;')
+        }
+    }
+
+    $out += @{
+        Id='amd-ulps-off'; Category='vendor'; Group='AMD settings'; Name='Turn off AMD Ultra Low Power State (ULPS)'; Risk='Low'; Recommended=$false
+        Guard={ (Test-HasGpuVendor 'AMD') -and (@(Get-AmdDisplayClassKeysV13).Count -gt 0) }
+        Restart='restart'
+        Desc='Sets EnableUlps to 0 on every AMD display adapter. ULPS powers down the idle graphics chip in a multi-GPU or some laptop setups and can cause black screens, crashes or lost frame pacing on wake. On a single desktop Radeon card it is usually not active, so expect no FPS change there; this is mainly a stability option. Undo restores the original value.'
+        Apply={
+            $saved = @()
+            foreach ($k in @(Get-AmdDisplayClassKeysV13)) {
+                $saved += (Get-RegSnapshot $k 'EnableUlps')
+                Set-RegValue -Path $k -Name 'EnableUlps' -Type 'DWord' -Value 0
+            }
+            if ($saved.Count -eq 0) { throw 'No AMD display adapter was found.' }
+            return @{ Saved=$saved }
+        }
+        Undo={ param($D) foreach ($s in @($D.Saved)) { if ($s) { Restore-RegSnapshot $s } } }
+        Test={
+            $keys = @(Get-AmdDisplayClassKeysV13)
+            if ($keys.Count -eq 0) { return $false }
+            foreach ($k in $keys) {
+                $c = Get-RegSnapshot $k 'EnableUlps'
+                if (-not $c.Existed -or [int]$c.Value -ne 0) { return $false }
+            }
+            return $true
+        }
+    }
+
+    # ------------------------------------------------------------------
+    # Browsers
+    # ------------------------------------------------------------------
+    $out += @{
+        Id='edge-debloat-policies'; Category='apps'; Group='Browser'; Name='Edge: turn off sidebar, shopping, rewards and reporting'; Risk='Low'; Recommended=$false; IsLaptopSafe=$true
+        Desc='Uses Microsoft Edge policies to turn off the Edge sidebar, the shopping assistant, Rewards, Collections, personalized-ad reporting, spotlight recommendations and optional diagnostic data. Edge still browses normally, with fewer background features and requests. Undo removes exactly the policies it added.'
+        Registry=@(
+            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'HubsSidebarEnabled' 'DWord' 0),
+            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'EdgeShoppingAssistantEnabled' 'DWord' 0),
+            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'ShowMicrosoftRewards' 'DWord' 0),
+            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'EdgeCollectionsEnabled' 'DWord' 0),
+            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'PersonalizationReportingEnabled' 'DWord' 0),
+            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'SpotlightExperiencesAndRecommendationsEnabled' 'DWord' 0),
+            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'DiagnosticData' 'DWord' 0)
+        )
+    }
+
+    $out += @{
+        Id='firefox-debloat-policies'; Category='apps'; Group='Browser'; Name='Firefox: turn off telemetry, studies and Pocket'; Risk='Low'; Recommended=$false; IsLaptopSafe=$true
+        Guard={ [bool]((Test-Path -LiteralPath 'HKLM:\SOFTWARE\Mozilla\Mozilla Firefox') -or (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'Mozilla Firefox\firefox.exe'))) }
+        Desc='Uses Firefox enterprise policies to turn off telemetry, background studies, the Pocket service and the default-browser nag. Firefox still browses normally. Only shown when Firefox is installed. Undo removes exactly the policies it added.'
+        Registry=@(
+            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox' 'DisableTelemetry' 'DWord' 1),
+            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox' 'DisableFirefoxStudies' 'DWord' 1),
+            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox' 'DisablePocket' 'DWord' 1),
+            (New-RegEntry 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox' 'DontCheckDefaultBrowser' 'DWord' 1)
+        )
+    }
+
+    # ------------------------------------------------------------------
+    # Storage
+    # ------------------------------------------------------------------
+    $out += @{
+        Id='storage-reserved-storage-off'; Category='storage'; Group='Drive optimization'; Name='Turn off Windows Reserved Storage'; Risk='Low'; Recommended=$false; IsLaptopSafe=$true
+        Guard={ (Get-WinBuild) -ge 18362 }
+        Desc='Windows sets aside several GB of disk for updates (Reserved Storage). This turns the reservation off so that space is free for games. It does not change speed, only free space. Windows Update still works but may need more free space when it installs a big update. Undo turns it back on.'
+        Apply={
+            $before = (& dism.exe /Online /Get-ReservedStorageState 2>&1 | Out-String)
+            $wasOn = ($before -match 'enabled')
+            & dism.exe /Online /Set-ReservedStorageState /State:Disabled | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'DISM could not turn off Reserved Storage. Run Compact Tweaks as administrator and make sure no update is installing.' }
+            return @{ WasOn=$wasOn }
+        }
+        Undo={ param($D) if ($D.WasOn) { & dism.exe /Online /Set-ReservedStorageState /State:Enabled | Out-Null } }
+        Test={
+            $o = (& dism.exe /Online /Get-ReservedStorageState 2>&1 | Out-String)
+            return [bool]($o -match 'disabled')
+        }
+    }
+
     return @($out)
 }
 
 $script:Tweaks = @($script:Tweaks) + @(Get-PurePerformanceTweaksV13)
-
-# v1.3 also applies feature/hardware guards to v1.1-v1.3 entries. Earlier
-# versions appended those catalogs after the first guard pass, so unsupported
-# NIC/power/task entries could remain visible.
-$script:Tweaks = @($script:Tweaks | Where-Object { (-not $_.Guard) -or [bool](& $_.Guard) })
 
 # Guard against accidental duplicate tweak IDs. A duplicate ID is never counted twice.
 $script:SeenTweakIds = @{}
